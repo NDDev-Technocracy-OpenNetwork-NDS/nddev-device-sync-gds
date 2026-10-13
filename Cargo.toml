@@ -1,6 +1,6 @@
 [package]
 name = "nddev-device-sync-gds"
-version = "0.0.1-alpha.2"
+version = "0.0.1-alpha.3"
 edition = "2024"
 rust-version = "1.99"
 license = "AGPL-3.0-only"
@@ -10,14 +10,20 @@ repository = "https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))'.dependencies]
 nddev-device-sync-adapter-io = { version = "=0.0.1-alpha.1", git = "https://github.com/NDDev-OpenNetwork/nddev-device-sync-agent", rev = "341644980976a08825b194f147b7534321325785" }
+nddev-device-sync-domain = { version = "=0.0.10", git = "https://github.com/NDDev-OpenNetwork/nddev-device-sync-core.git", rev = "631edf30924418e29f2bb0859ab02cbab235623e" }
+nddev-device-sync-application = { version = "=0.0.1-alpha.18", git = "https://github.com/NDDev-OpenNetwork/nddev-device-sync-core.git", rev = "631edf30924418e29f2bb0859ab02cbab235623e" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gix = { version = "=0.88.0", default-features = false, features = ["status", "revision", "sha1"] }
+rustix = { version = "1.1", features = ["process"] }
 
 [dev-dependencies]
-serde_json = "1"
 tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 
 [lints.rust]
 unsafe_code = "forbid"

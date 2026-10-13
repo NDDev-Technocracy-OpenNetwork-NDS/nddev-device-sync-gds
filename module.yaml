@@ -1,10 +1,9 @@
 id: gds
 name: nddev-device-sync-gds
-version: 0.0.1-alpha.2
+version: 0.0.1-alpha.3
 channel: alpha
 license: AGPL-3.0-only
 repository: NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-gds
 standards_lock: standarts.lock
 runtime_manifest: contracts/module.json
-platforms: [linux, macos]
-native_provider: provider.lock.json
+platforms: [linux]

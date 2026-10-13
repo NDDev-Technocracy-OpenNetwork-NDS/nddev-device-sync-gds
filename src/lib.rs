@@ -1,14 +1,11 @@
-//! Read-only GDS status adapter. GDS retains Git topology, classification and
-//! policy ownership. NDS never interprets an unknown scope as authorization.
+//! Bounded Rust replacement of the local Git status provider.
+//! Core owns classification; shared Agent IO owns worker lifetime.
 
 pub mod view;
 pub use view::*;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-mod native;
+pub mod rust_status;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-mod response;
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-pub use native::Gds;
+pub use rust_status::IsolatedGds as Gds;
 
-/// Canonical compiled-in runtime manifest for this integration.
 pub const MANIFEST: &str = include_str!("../contracts/module.json");

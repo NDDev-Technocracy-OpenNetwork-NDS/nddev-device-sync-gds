@@ -1,7 +1,7 @@
 [advisories]
 yanked = "deny"
 [licenses]
-allow = ["AGPL-3.0-only", "Apache-2.0", "BSD-3-Clause", "ISC", "MIT", "Unicode-3.0"]
+allow = ["AGPL-3.0-only", "Apache-2.0", "BSD-3-Clause", "ISC", "MIT", "Unicode-3.0", "Zlib"]
 confidence-threshold = 0.95
 [bans]
 multiple-versions = "warn"
@@ -9,4 +9,4 @@ wildcards = "deny"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-allow-git = ["https://github.com/NDDev-OpenNetwork/nddev-device-sync-agent"]
+allow-git = ["https://github.com/NDDev-OpenNetwork/nddev-device-sync-agent", "https://github.com/NDDev-OpenNetwork/nddev-device-sync-core.git"]

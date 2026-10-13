@@ -1,11 +1,10 @@
 {
   "id": "gds",
-  "version": "0.0.1-alpha.2",
+  "version": "0.0.1-alpha.3",
   "api_version": 1,
   "kind": "gds",
   "platforms": [
-    "linux",
-    "macos"
+    "linux"
   ],
   "capabilities": [
     "read_device_state",

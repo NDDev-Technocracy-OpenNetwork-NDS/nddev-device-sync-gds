@@ -6,4 +6,4 @@ check:
     cargo test --locked
 
 provider-check:
-    cargo test --locked --test provider -- --ignored
+    cargo test --locked --test provider --test isolation
