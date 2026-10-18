@@ -161,7 +161,7 @@ fn status(
         event.name = "gds.http.response",
         module = "gds",
         scope = "io",
-        http.response.status_code = status,
+        status,
         outcome = if status == 200 { "ok" } else { "rejected" }
     );
     match status {
