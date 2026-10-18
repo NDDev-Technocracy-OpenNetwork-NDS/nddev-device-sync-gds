@@ -3,22 +3,6 @@ use nddev_device_sync_domain::{
     modules::ModuleError,
     repositories::catalog::{CatalogPageRequest, CredentialSelection},
 };
-use std::{
-    io::Write,
-    sync::{Arc, Mutex},
-};
-use tracing::instrument::WithSubscriber;
-#[derive(Clone)]
-struct Capture(Arc<Mutex<Vec<u8>>>);
-impl Write for Capture {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
 #[tokio::test]
 #[ignore = "actual fixed GitHub negative; generated invalid credential only, no positive fixture"]
 async fn fixed_github_rejects_generated_invalid_credential_without_empty_success() {
@@ -34,27 +18,52 @@ async fn fixed_github_rejects_generated_invalid_credential_without_empty_success
             .unwrap()
             .as_nanos()
     );
-    let captured = Capture(Arc::default());
-    let sink = captured.clone();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .with_writer(move || sink.clone())
-        .finish();
+    let mut logger = nddev_device_sync_telemetry::install(nddev_device_sync_telemetry::Config {
+        service: "nddev-device-sync-gds".into(),
+        version: env!("CARGO_PKG_VERSION").into(),
+        repository: "NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-gds".into(),
+        commit: "unknown".into(),
+        channel: "alpha".into(),
+        standards: "v0.0.1-alpha.9".into(),
+        environment: "development".into(),
+        target_prefixes: vec!["nddev_device_sync_gds".into()],
+        default_module: "gds".into(),
+        debug: None,
+    })
+    .unwrap();
+    let feed = logger.control.subscribe().unwrap();
     let result = nddev_device_sync_gds::github::read_user_and_page(
         &token,
         &request,
         &Default::default(),
         async || Ok(()),
     )
-    .with_subscriber(subscriber)
     .await;
     assert!(matches!(result, Err(ModuleError::Unavailable)));
-    let text = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
-    assert!(text.contains("http.response.status_code=401"));
+    assert_eq!(
+        logger.control.rejected_fields_or_events(),
+        0,
+        "real provider outcomes must satisfy the canonical SDK envelope"
+    );
+    let mut text = String::new();
+    while let Some(batch) = feed.take_batch() {
+        text.push_str(std::str::from_utf8(batch.bytes()).unwrap());
+        batch.acknowledge();
+    }
+    let events: Vec<serde_json::Value> = text
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(
+        events
+            .iter()
+            .any(|event| event["event.name"] == "gds.http.response" && event["status"] == 401)
+    );
     assert!(text.contains("gds.catalog.read.failed"));
     assert!(
         !text.contains(&token)
             && !text.contains("Bearer ")
             && !text.contains("https://api.github.com")
     );
+    logger.shutdown();
 }

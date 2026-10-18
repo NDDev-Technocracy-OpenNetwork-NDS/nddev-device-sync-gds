@@ -45,7 +45,6 @@ rustix = { version = "1.1", features = ["process"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 flate2 = "1"
-tracing-subscriber = { version = "0.3", features = ["fmt"] }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "net", "io-util"] }
 
