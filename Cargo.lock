@@ -2126,7 +2126,7 @@ checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 [[package]]
 name = "nddev-device-sync-adapter-io"
 version = "0.0.1-alpha.4"
-source = "git+https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-agent?rev=fba131111837ce1fe6c82ce6df9e3d19420f62e7#fba131111837ce1fe6c82ce6df9e3d19420f62e7"
+source = "git+https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-agent?rev=a45a0d980d1e39260dfc7e6d6cbda55b02991d35#a45a0d980d1e39260dfc7e6d6cbda55b02991d35"
 dependencies = [
  "errno",
  "libproc",
@@ -2145,7 +2145,7 @@ dependencies = [
 [[package]]
 name = "nddev-device-sync-application"
 version = "0.0.1-alpha.21"
-source = "git+https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-core.git?rev=f628a85bee38b837351e8621f5711d4b2958934c#f628a85bee38b837351e8621f5711d4b2958934c"
+source = "git+https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-core.git?rev=fc12893bc7e4525ed8da1fe01ea43c3d15612a81#fc12893bc7e4525ed8da1fe01ea43c3d15612a81"
 dependencies = [
  "nddev-device-sync-domain",
 ]
@@ -2153,7 +2153,7 @@ dependencies = [
 [[package]]
 name = "nddev-device-sync-domain"
 version = "0.0.12"
-source = "git+https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-core.git?rev=f628a85bee38b837351e8621f5711d4b2958934c#f628a85bee38b837351e8621f5711d4b2958934c"
+source = "git+https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-core.git?rev=fc12893bc7e4525ed8da1fe01ea43c3d15612a81#fc12893bc7e4525ed8da1fe01ea43c3d15612a81"
 dependencies = [
  "serde",
  "thiserror",
@@ -2165,6 +2165,7 @@ dependencies = [
 name = "nddev-device-sync-gds"
 version = "0.0.1-alpha.6"
 dependencies = [
+ "base64",
  "flate2",
  "gix",
  "gloo-timers",
