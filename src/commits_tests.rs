@@ -350,6 +350,52 @@ async fn filters_includes_and_hooks_are_refused_without_execution() {
 }
 
 #[tokio::test]
+async fn unqualified_submodules_are_refused_before_worktree_filters_or_fast_forward() {
+    let fixture = Fixture::new();
+    let before = git(&fixture.second, &["rev-parse", "HEAD"]);
+    git(
+        &fixture.first,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            &fixture.endpoint,
+            "child",
+        ],
+    );
+    git(
+        &fixture.first,
+        &["commit", "-m", "external submodule commit"],
+    );
+    // The remote change is authored and published externally, not by NDS.
+    git(&fixture.first, &["push", "origin", "main"]);
+    let marker = fixture._directory.path().join("filter-must-not-run");
+    let child = fixture.first.join("child");
+    git(
+        &child,
+        &[
+            "config",
+            "filter.probe.clean",
+            &format!("touch {}", marker.display()),
+        ],
+    );
+    std::fs::write(child.join(".gitattributes"), "initial.txt filter=probe\n").unwrap();
+    std::fs::write(child.join("initial.txt"), "modified submodule work").unwrap();
+    assert_eq!(
+        fixture.synchronize(&fixture.first).await.unwrap_err(),
+        ModuleError::Unavailable
+    );
+    assert!(!marker.exists());
+    assert_eq!(
+        fixture.synchronize(&fixture.second).await.unwrap_err(),
+        ModuleError::Unavailable
+    );
+    assert_eq!(git(&fixture.second, &["rev-parse", "HEAD"]), before);
+    assert!(!fixture.second.join("child").exists());
+}
+
+#[tokio::test]
 async fn public_workspace_checks_owner_layout_and_exact_remote_before_network() {
     use nddev_device_sync_domain::repositories::catalog::*;
     let fixture = Fixture::new();

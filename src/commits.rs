@@ -2,10 +2,7 @@
 //! owns module consent, current catalog/credential selection and authorization.
 //! No ambient credential, automatic commit, force, reset, rebase or PR operation.
 use base64::{Engine, engine::general_purpose::STANDARD};
-use nddev_device_sync_adapter_io::{
-    CancellationToken, CredentialEnvironment, ProcessInput, ProcessIo, ProcessOutput,
-    ProcessRequest,
-};
+use nddev_device_sync_adapter_io::{CancellationToken, ProcessIo, ProcessOutput, ProcessRequest};
 use nddev_device_sync_application::repositories::commits::{
     self, CommitOutcome, Inspection, SynchronizeCommits,
 };
@@ -239,6 +236,7 @@ impl<G: AsyncFnMut() -> Result<(), ModuleError>> Session<'_, G> {
     }
     async fn git(&mut self, arguments: &[&str]) -> Result<ProcessOutput, ModuleError> {
         self.validate().await?;
+        let network = matches!(arguments.first(), Some(&"fetch" | &"push"));
         let mut argv: Vec<OsString> = [
             "-c",
             if cfg!(windows) {
@@ -249,22 +247,30 @@ impl<G: AsyncFnMut() -> Result<(), ModuleError>> Session<'_, G> {
             "-c",
             "core.fsmonitor=false",
             "-c",
+            "submodule.recurse=false",
+            "-c",
             "credential.helper=",
             "-c",
             "http.followRedirects=false",
             "-c",
             "protocol.allow=never",
-            "-c",
-            "protocol.https.allow=always",
-            "--config-env=http.https://github.com/.extraHeader=NDS_GITHUB_AUTHORIZATION",
         ]
         .into_iter()
         .map(Into::into)
         .collect();
+        if network {
+            argv.extend([
+                OsString::from("-c"),
+                OsString::from("protocol.https.allow=always"),
+                OsString::from(
+                    "--config-env=http.https://github.com/.extraHeader=NDS_GITHUB_AUTHORIZATION",
+                ),
+            ]);
+        }
         // A local directory transport is available only to this module's real
         // Git acceptance. It is absent from the production constructor/API.
         #[cfg(test)]
-        if PathBuf::from(&self.endpoint).is_absolute() {
+        if network && PathBuf::from(&self.endpoint).is_absolute() {
             argv.extend([
                 OsString::from("-c"),
                 OsString::from("protocol.file.allow=always"),
@@ -273,7 +279,7 @@ impl<G: AsyncFnMut() -> Result<(), ModuleError>> Session<'_, G> {
         argv.extend(arguments.iter().map(OsString::from));
         self.workspace
             .io
-            .process_input(
+            .git_process(
                 ProcessRequest {
                     executable: self.workspace.git.clone(),
                     arguments: argv,
@@ -281,10 +287,7 @@ impl<G: AsyncFnMut() -> Result<(), ModuleError>> Session<'_, G> {
                     timeout: Duration::from_secs(30),
                     max_output_bytes: OUTPUT_BYTES,
                 },
-                ProcessInput {
-                    stdin: Default::default(),
-                    credential: Some((CredentialEnvironment::GitHttps, self.authorization.clone())),
-                },
+                network.then(|| self.authorization.clone()),
                 self.cancellation.clone(),
             )
             .await
@@ -293,6 +296,13 @@ impl<G: AsyncFnMut() -> Result<(), ModuleError>> Session<'_, G> {
     async fn required(&mut self, arguments: &[&str]) -> Result<Vec<u8>, ModuleError> {
         let result = self.git(arguments).await?;
         if !result.status.success() {
+            #[cfg(test)]
+            eprintln!(
+                "isolated Git {} refusal: {}",
+                arguments[0],
+                String::from_utf8_lossy(&result.stderr)
+            );
+            tracing::warn!(event.name="gds.git.failed",module="gds",scope="io",git.operation=arguments[0],status=result.status.code(),error.type="git_exit",outcome="error");
             return Err(ModuleError::ProviderFailed);
         }
         Ok(result.stdout)
@@ -323,12 +333,22 @@ impl<G: AsyncFnMut() -> Result<(), ModuleError>> Session<'_, G> {
                 "--local",
                 "--name-only",
                 "--get-regexp",
-                r"^(include|includeif|url|filter|http|push\.pushoption|core\.(worktree|bare|hookspath)|extensions)",
+                r"^(include|includeif|url|filter|http|push\.pushoption|core\.(worktree|bare|hookspath|alternaterefscommand)|extensions)",
             ])
             .await?;
         // core.bare=false is ordinary clone metadata. Every other named
         // setting here changes path/transport or executes an external driver.
         if settings.lines().any(|key| key != "core.bare") {
+            return Err(ModuleError::Unavailable);
+        }
+        // Status can run clean filters inside submodules. Their independent
+        // configurations are not qualified by this existing-checkout profile.
+        let index = self.required(&["ls-files", "--stage", "-z"]).await?;
+        if index
+            .split(|b| *b == 0)
+            .any(|entry| entry.starts_with(b"160000 "))
+        {
+            tracing::warn!(event.name="gds.commits.refused",module="gds",scope="io",error.type="unsupported_submodule",outcome="rejected");
             return Err(ModuleError::Unavailable);
         }
         for name in ["pre-push", "post-merge", "post-checkout"] {
@@ -539,6 +559,16 @@ impl<G: AsyncFnMut() -> Result<(), ModuleError>> SynchronizeCommits for Session<
                 .await?,
         )?;
         oid(&fetched)?;
+        let tree = self
+            .required(&["ls-tree", "-r", "--full-tree", "-z", &fetched])
+            .await?;
+        if tree
+            .split(|b| *b == 0)
+            .any(|entry| entry.starts_with(b"160000 "))
+        {
+            tracing::warn!(event.name="gds.commits.refused",module="gds",scope="io",error.type="unsupported_submodule",outcome="rejected");
+            return Err(ModuleError::Unavailable);
+        }
         // A branch switch during fetch must not authorize a different branch.
         if self.witness().await? != *expected {
             return Err(ModuleError::Busy);

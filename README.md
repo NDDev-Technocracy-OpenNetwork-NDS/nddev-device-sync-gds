@@ -63,9 +63,10 @@ explicit refusals. It creates no commits, force updates, resets or rebases.
 
 Git uses the caller's protected credential through a scoped HTTPS header outside
 argv, with no ambient Git configuration, credential helper or terminal prompt.
-Filters, included configuration, custom hooks and transport overrides are
+Submodules, filters, included configuration, custom hooks and transport overrides are
 refused. Required caller revalidation covers every command and completion;
 cancellation, output and operation time are bounded by the existing ProcessIo.
+Local Git inspections receive no credential and cannot start a network transport.
 Raw paths, refs, command output and credentials are not telemetry fields.
 
 `just commit-check` exercises actual isolated Git publication, fast-forward,
