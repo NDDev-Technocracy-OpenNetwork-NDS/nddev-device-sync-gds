@@ -1,0 +1,617 @@
+//! Fixed native Git operations for Core's existing-commit cycle. The caller
+//! owns module consent, current catalog/credential selection and authorization.
+//! No ambient credential, automatic commit, force, reset, rebase or PR operation.
+use base64::{Engine, engine::general_purpose::STANDARD};
+use nddev_device_sync_adapter_io::{
+    CancellationToken, CredentialEnvironment, ProcessInput, ProcessIo, ProcessOutput,
+    ProcessRequest,
+};
+use nddev_device_sync_application::repositories::commits::{
+    self, CommitOutcome, Inspection, SynchronizeCommits,
+};
+use nddev_device_sync_domain::{
+    modules::ModuleError,
+    repositories::{
+        workspace::{CheckoutLocation, SyncBlock},
+        *,
+    },
+};
+use std::{
+    ffi::OsString,
+    fs::{File, OpenOptions},
+    path::PathBuf,
+    time::Duration,
+};
+use tracing::Instrument;
+use zeroize::Zeroizing;
+
+const OUTPUT_BYTES: usize = 1_048_576;
+
+/// Native-only capability, intentionally neither Debug nor Serialize. The Git
+/// executable is resolved by the installation, never by repository metadata.
+pub struct GitWorkspace {
+    io: ProcessIo,
+    git: PathBuf,
+    root: PathBuf,
+}
+impl GitWorkspace {
+    pub fn new(io: ProcessIo, git: PathBuf, root: PathBuf) -> Result<Self, ModuleError> {
+        if !git.is_absolute() || !root.is_absolute() {
+            return Err(ModuleError::InvalidInput);
+        }
+        let root = root.canonicalize().map_err(|_| ModuleError::Unavailable)?;
+        if !root.is_dir() || root.join(".git").exists() {
+            return Err(ModuleError::InvalidInput);
+        }
+        Ok(Self { io, git, root })
+    }
+
+    /// Only an existing checkout in the authorized owner/repository layout.
+    /// `revalidate` checks actual NDS authority, module write consent and the
+    /// exact protected credential selection before EACH command and completion.
+    pub async fn synchronize(
+        &self,
+        location: &CheckoutLocation,
+        archived: bool,
+        credential: &str,
+        cancellation: &CancellationToken,
+        revalidate: impl AsyncFnMut() -> Result<(), ModuleError>,
+    ) -> Result<CommitOutcome, ModuleError> {
+        location.validate()?;
+        let checkout = self.root.join(location.owner()).join(location.repository());
+        if checkout
+            .parent()
+            .and_then(|p| p.canonicalize().ok())
+            .as_deref()
+            != Some(self.root.join(location.owner()).as_path())
+            || checkout.canonicalize().ok().as_deref() != Some(checkout.as_path())
+        {
+            return Err(ModuleError::InvalidInput);
+        }
+        let git_dir = checkout.join(".git");
+        if !std::fs::symlink_metadata(&git_dir)
+            .map_err(|_| ModuleError::Unavailable)?
+            .file_type()
+            .is_dir()
+        {
+            return Err(ModuleError::Unavailable);
+        }
+        let binding_path = git_dir.join("nds-binding.json");
+        let metadata = match std::fs::symlink_metadata(&binding_path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(ModuleError::Unavailable);
+            }
+            Err(_) => return Err(ModuleError::Unavailable),
+        };
+        if !metadata.is_file() || metadata.len() > 2_048 {
+            return Err(ModuleError::InvalidResponse);
+        }
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        File::open(binding_path)
+            .map_err(|_| ModuleError::Unavailable)?
+            .take(2_049)
+            .read_to_end(&mut bytes)
+            .map_err(|_| ModuleError::Unavailable)?;
+        if bytes.len() > 2_048 {
+            return Err(ModuleError::InvalidResponse);
+        }
+        let binding: CheckoutLocation =
+            serde_json::from_slice(&bytes).map_err(|_| ModuleError::InvalidResponse)?;
+        binding
+            .validate()
+            .map_err(|_| ModuleError::InvalidResponse)?;
+        if binding != *location {
+            return Ok(CommitOutcome::Blocked(SyncBlock::WrongRemote));
+        }
+        let endpoint = location.https_url();
+        self.run(
+            checkout,
+            endpoint,
+            archived,
+            credential,
+            cancellation,
+            revalidate,
+        )
+        .await
+    }
+
+    async fn run(
+        &self,
+        checkout: PathBuf,
+        endpoint: String,
+        archived: bool,
+        credential: &str,
+        cancellation: &CancellationToken,
+        mut revalidate: impl AsyncFnMut() -> Result<(), ModuleError>,
+    ) -> Result<CommitOutcome, ModuleError> {
+        if credential.is_empty()
+            || credential.len() > 8_192
+            || !credential.bytes().all(|b| b.is_ascii_graphic())
+        {
+            return Err(ModuleError::InvalidInput);
+        }
+        if cancellation.is_cancelled() {
+            return Err(ModuleError::Cancelled);
+        }
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+        tokio::select! { biased;
+            () = cancellation.cancelled() => return Err(ModuleError::Cancelled),
+            result = tokio::time::timeout_at(deadline, revalidate()) => result.map_err(|_| ModuleError::Timeout)??,
+        }
+        if cancellation.is_cancelled() {
+            return Err(ModuleError::Cancelled);
+        }
+        let input = Zeroizing::new(format!("x-access-token:{credential}"));
+        let mut authorization = Zeroizing::new(String::from("Authorization: Basic "));
+        STANDARD.encode_string(input.as_bytes(), &mut authorization);
+        let git_dir = checkout.join(".git");
+        if !git_dir.is_dir()
+            || std::fs::symlink_metadata(&git_dir)
+                .map_err(|_| ModuleError::Unavailable)?
+                .file_type()
+                .is_symlink()
+        {
+            return Err(ModuleError::Unavailable);
+        }
+        if std::fs::symlink_metadata(git_dir.join("nds-sync.lock"))
+            .is_ok_and(|metadata| !metadata.file_type().is_file())
+        {
+            return Err(ModuleError::Unavailable);
+        }
+        let lease = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(git_dir.join("nds-sync.lock"))
+            .map_err(|_| ModuleError::Unavailable)?;
+        lease.try_lock().map_err(|_| ModuleError::Busy)?;
+        let cancellation = cancellation.child_token();
+        let _cancel_on_drop = cancellation.clone().drop_guard();
+        let mut session = Session {
+            workspace: self,
+            checkout,
+            endpoint,
+            archived,
+            authorization,
+            cancellation: cancellation.clone(),
+            revalidate,
+            git_dir,
+            _lease: lease,
+            fetched: None,
+        };
+        let span = nddev_device_sync_telemetry::operation_span("gds", "io")
+            .map_err(|_| ModuleError::InvalidContract)?;
+        async {
+            let result = tokio::select! { biased;
+                () = cancellation.cancelled() => Err(ModuleError::Cancelled),
+                result = tokio::time::timeout_at(deadline, async {
+                    session.safe_configuration().await?;
+                    let result = commits::synchronize(&mut session).await?;
+                    session.validate().await?;
+                    Ok(result)
+                }) => result.unwrap_or(Err(ModuleError::Timeout)),
+            };
+            nddev_device_sync_telemetry::finish_operation_span(&tracing::Span::current(), nddev_device_sync_domain::modules::query_outcome(&result).terminal_failure());
+            match &result {
+                Ok(outcome) => tracing::info!(event.name="gds.commits.completed", module="gds", scope="io", outcome=?outcome),
+                Err(error) => tracing::warn!(event.name="gds.commits.failed", module="gds", scope="io", error.type=%error, outcome="error"),
+            }
+            result
+        }.instrument(span).await
+    }
+}
+
+struct Session<'a, G> {
+    workspace: &'a GitWorkspace,
+    checkout: PathBuf,
+    endpoint: String,
+    archived: bool,
+    authorization: Zeroizing<String>,
+    cancellation: CancellationToken,
+    revalidate: G,
+    git_dir: PathBuf,
+    _lease: File,
+    fetched: Option<String>,
+}
+#[derive(PartialEq, Eq)]
+struct Witness {
+    branch: String,
+    head: String,
+    upstream: String,
+    origin: String,
+    status: Vec<u8>,
+    active_writer: bool,
+}
+
+impl<G: AsyncFnMut() -> Result<(), ModuleError>> Session<'_, G> {
+    async fn validate(&mut self) -> Result<(), ModuleError> {
+        if self.cancellation.is_cancelled() {
+            return Err(ModuleError::Cancelled);
+        }
+        (self.revalidate)().await?;
+        if self.cancellation.is_cancelled() {
+            return Err(ModuleError::Cancelled);
+        }
+        Ok(())
+    }
+    async fn git(&mut self, arguments: &[&str]) -> Result<ProcessOutput, ModuleError> {
+        self.validate().await?;
+        let mut argv: Vec<OsString> = [
+            "-c",
+            if cfg!(windows) {
+                "core.hooksPath=NUL"
+            } else {
+                "core.hooksPath=/dev/null"
+            },
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "credential.helper=",
+            "-c",
+            "http.followRedirects=false",
+            "-c",
+            "protocol.allow=never",
+            "-c",
+            "protocol.https.allow=always",
+            "--config-env=http.https://github.com/.extraHeader=NDS_GITHUB_AUTHORIZATION",
+        ]
+        .into_iter()
+        .map(Into::into)
+        .collect();
+        // A local directory transport is available only to this module's real
+        // Git acceptance. It is absent from the production constructor/API.
+        #[cfg(test)]
+        if PathBuf::from(&self.endpoint).is_absolute() {
+            argv.extend([
+                OsString::from("-c"),
+                OsString::from("protocol.file.allow=always"),
+            ]);
+        }
+        argv.extend(arguments.iter().map(OsString::from));
+        self.workspace
+            .io
+            .process_input(
+                ProcessRequest {
+                    executable: self.workspace.git.clone(),
+                    arguments: argv,
+                    directory: Some(self.checkout.clone()),
+                    timeout: Duration::from_secs(30),
+                    max_output_bytes: OUTPUT_BYTES,
+                },
+                ProcessInput {
+                    stdin: Default::default(),
+                    credential: Some((CredentialEnvironment::GitHttps, self.authorization.clone())),
+                },
+                self.cancellation.clone(),
+            )
+            .await
+            .map_err(map_io)
+    }
+    async fn required(&mut self, arguments: &[&str]) -> Result<Vec<u8>, ModuleError> {
+        let result = self.git(arguments).await?;
+        if !result.status.success() {
+            return Err(ModuleError::ProviderFailed);
+        }
+        Ok(result.stdout)
+    }
+    async fn optional(&mut self, arguments: &[&str]) -> Result<String, ModuleError> {
+        let result = self.git(arguments).await?;
+        if result.status.code() == Some(1) {
+            return Ok(String::new());
+        }
+        if !result.status.success() {
+            return Err(ModuleError::ProviderFailed);
+        }
+        text(result.stdout)
+    }
+    async fn safe_configuration(&mut self) -> Result<(), ModuleError> {
+        if self.git_dir.join("commondir").exists() {
+            return Err(ModuleError::Unavailable);
+        }
+        for name in [
+            "config", "objects", "refs", "HEAD", "index", "logs", "hooks",
+        ] {
+            self.no_symlink(&self.git_dir.join(name))?;
+        }
+        let settings = self
+            .optional(&[
+                "config",
+                "--no-includes",
+                "--local",
+                "--name-only",
+                "--get-regexp",
+                r"^(include|includeif|url|filter|http|push\.pushoption|core\.(worktree|bare|hookspath)|extensions)",
+            ])
+            .await?;
+        // core.bare=false is ordinary clone metadata. Every other named
+        // setting here changes path/transport or executes an external driver.
+        if settings.lines().any(|key| key != "core.bare") {
+            return Err(ModuleError::Unavailable);
+        }
+        for name in ["pre-push", "post-merge", "post-checkout"] {
+            if self.git_dir.join("hooks").join(name).exists() {
+                return Err(ModuleError::Unavailable);
+            }
+        }
+        Ok(())
+    }
+    fn no_symlink(&self, path: &std::path::Path) -> Result<(), ModuleError> {
+        match std::fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => Err(ModuleError::Unavailable),
+            Ok(_) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err(ModuleError::Unavailable),
+        }
+    }
+    async fn ordinary_ref(&mut self, name: &str) -> Result<(), ModuleError> {
+        let mut path = self.git_dir.clone();
+        for component in name.split('/') {
+            if matches!(component, "" | "." | "..") {
+                return Err(ModuleError::InvalidResponse);
+            }
+            path.push(component);
+            self.no_symlink(&path)?;
+        }
+        if !self
+            .optional(&["symbolic-ref", "--quiet", name])
+            .await?
+            .is_empty()
+        {
+            return Err(ModuleError::Unavailable);
+        }
+        Ok(())
+    }
+    fn active_writer(&self) -> bool {
+        [
+            "index.lock",
+            "HEAD.lock",
+            "packed-refs.lock",
+            "shallow.lock",
+            "MERGE_HEAD",
+            "CHERRY_PICK_HEAD",
+            "REVERT_HEAD",
+            "rebase-merge",
+            "rebase-apply",
+            "sequencer",
+            "BISECT_LOG",
+        ]
+        .into_iter()
+        .any(|name| self.git_dir.join(name).exists())
+    }
+    async fn witness(&mut self) -> Result<Witness, ModuleError> {
+        let branch = self.optional(&["symbolic-ref", "--quiet", "HEAD"]).await?;
+        let head = self
+            .optional(&["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
+            .await?;
+        if !head.is_empty() {
+            oid(&head)?;
+        }
+        let upstream = if head.is_empty() || branch.is_empty() {
+            String::new()
+        } else {
+            let result = self
+                .git(&["rev-parse", "--symbolic-full-name", "@{upstream}"])
+                .await?;
+            if result.status.success() {
+                text(result.stdout)?
+            } else {
+                String::new()
+            }
+        };
+        let origin = self
+            .optional(&[
+                "config",
+                "--no-includes",
+                "--local",
+                "--get-all",
+                "remote.origin.url",
+            ])
+            .await?;
+        let status = self
+            .required(&[
+                "status",
+                "--porcelain=v2",
+                "-z",
+                "--untracked-files=normal",
+                "--ignore-submodules=none",
+            ])
+            .await?;
+        let active_writer = self.active_writer()
+            || (!branch.is_empty() && self.git_dir.join(format!("{branch}.lock")).exists());
+        Ok(Witness {
+            branch,
+            head,
+            upstream,
+            origin,
+            status,
+            active_writer,
+        })
+    }
+    async fn unchanged(&mut self, expected: &Witness) -> Result<(), ModuleError> {
+        self.safe_configuration().await?;
+        self.ordinary_ref(&expected.branch).await?;
+        self.ordinary_ref(&expected.upstream).await?;
+        if self.witness().await? != *expected {
+            return Err(ModuleError::Busy);
+        }
+        self.validate().await
+    }
+}
+impl<G: AsyncFnMut() -> Result<(), ModuleError>> SynchronizeCommits for Session<'_, G> {
+    type Witness = Witness;
+    async fn inspect(&mut self) -> Result<Inspection<Witness>, ModuleError> {
+        let witness = self.witness().await?;
+        let mut changes = Changes::default();
+        let mut rows = witness.status.split(|b| *b == 0);
+        while let Some(row) = rows.next() {
+            if row.is_empty() {
+                continue;
+            }
+            match row[0] {
+                b'?' => changes.untracked += 1,
+                b'u' => changes.conflicted += 1,
+                b'1' | b'2' if row.len() > 10 => {
+                    changes.staged += u32::from(row[2] != b'.');
+                    changes.unstaged += u32::from(row[3] != b'.');
+                    changes.submodule_changes += u32::from(&row[5..9] != b"N...");
+                    if row[0] == b'2' {
+                        rows.next().ok_or(ModuleError::InvalidResponse)?;
+                    }
+                }
+                _ => return Err(ModuleError::InvalidResponse),
+            }
+        }
+        let comparison = if let Some(remote) = self.fetched.clone() {
+            let range = format!("{}...{remote}", witness.head);
+            let counts = text(
+                self.required(&["rev-list", "--left-right", "--count", &range, "--"])
+                    .await?,
+            )?;
+            let parts = counts
+                .split_whitespace()
+                .map(str::parse::<u32>)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| ModuleError::InvalidResponse)?;
+            if parts.len() != 2 {
+                return Err(ModuleError::InvalidResponse);
+            }
+            BranchComparison::Available {
+                ahead: parts[0],
+                behind: parts[1],
+            }
+        } else {
+            BranchComparison::Unavailable
+        };
+        let branch = witness
+            .branch
+            .strip_prefix("refs/heads/")
+            .map(str::to_owned);
+        let upstream_matches = branch
+            .as_ref()
+            .is_some_and(|b| witness.upstream == format!("refs/remotes/origin/{b}"))
+            && witness.origin == self.endpoint;
+        let status = LocalGitStatus {
+            head_kind: if witness.branch.is_empty() {
+                HeadKind::Detached
+            } else if witness.head.is_empty() {
+                HeadKind::Unborn
+            } else {
+                HeadKind::Branch
+            },
+            branch,
+            upstream: (!witness.upstream.is_empty()).then(|| witness.upstream.clone()),
+            comparison,
+            changes,
+            partial_reasons: vec![],
+        };
+        Ok(Inspection {
+            status,
+            archived: self.archived,
+            active_writer: witness.active_writer,
+            upstream_matches,
+            witness,
+        })
+    }
+    async fn fetch(&mut self, expected: &Witness) -> Result<(), ModuleError> {
+        self.unchanged(expected).await?;
+        let branch = expected
+            .branch
+            .strip_prefix("refs/heads/")
+            .ok_or(ModuleError::InvalidResponse)?;
+        let remote = format!("refs/remotes/origin/{branch}");
+        let refspec = format!("{}:{remote}", expected.branch);
+        let endpoint = self.endpoint.clone();
+        self.required(&[
+            "fetch",
+            "--no-tags",
+            "--no-recurse-submodules",
+            "--no-auto-maintenance",
+            "--no-write-fetch-head",
+            &endpoint,
+            &refspec,
+        ])
+        .await?;
+        let fetched = text(
+            self.required(&["rev-parse", "--verify", &format!("{remote}^{{commit}}")])
+                .await?,
+        )?;
+        oid(&fetched)?;
+        // A branch switch during fetch must not authorize a different branch.
+        if self.witness().await? != *expected {
+            return Err(ModuleError::Busy);
+        }
+        self.fetched = Some(fetched);
+        Ok(())
+    }
+    async fn push(&mut self, expected: &Witness) -> Result<(), ModuleError> {
+        self.unchanged(expected).await?;
+        let refspec = format!("{}:{}", expected.head, expected.branch);
+        let endpoint = self.endpoint.clone();
+        self.required(&[
+            "push",
+            "--porcelain",
+            "--no-follow-tags",
+            "--recurse-submodules=no",
+            &endpoint,
+            &refspec,
+        ])
+        .await?;
+        let remote = format!(
+            "refs/remotes/origin/{}",
+            expected
+                .branch
+                .strip_prefix("refs/heads/")
+                .ok_or(ModuleError::InvalidResponse)?
+        );
+        let old = self.fetched.clone().ok_or(ModuleError::InvalidContract)?;
+        self.required(&["update-ref", &remote, &expected.head, &old])
+            .await?;
+        self.fetched = Some(expected.head.clone());
+        Ok(())
+    }
+    async fn fast_forward(&mut self, expected: &Witness) -> Result<(), ModuleError> {
+        self.unchanged(expected).await?;
+        let remote = self.fetched.clone().ok_or(ModuleError::InvalidContract)?;
+        self.required(&[
+            "merge",
+            "--ff-only",
+            "--no-autostash",
+            "--no-edit",
+            "--no-stat",
+            &remote,
+        ])
+        .await?;
+        Ok(())
+    }
+}
+fn text(bytes: Vec<u8>) -> Result<String, ModuleError> {
+    String::from_utf8(bytes)
+        .map(|v| v.trim_end_matches(['\r', '\n']).to_owned())
+        .map_err(|_| ModuleError::InvalidResponse)
+}
+fn oid(value: &str) -> Result<(), ModuleError> {
+    if !matches!(value.len(), 40 | 64) || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Err(ModuleError::InvalidResponse)
+    } else {
+        Ok(())
+    }
+}
+fn map_io(error: nddev_device_sync_adapter_io::IoError) -> ModuleError {
+    use nddev_device_sync_adapter_io::IoError as E;
+    match error {
+        E::Busy => ModuleError::Busy,
+        E::Timeout => ModuleError::Timeout,
+        E::Cancelled => ModuleError::Cancelled,
+        E::InvalidConfiguration => ModuleError::InvalidInput,
+        E::OutputLimit | E::InvalidFrame | E::InvalidResponse => ModuleError::InvalidResponse,
+        E::Unavailable => ModuleError::Unavailable,
+        E::ProviderExit | E::Transport => ModuleError::ProviderFailed,
+    }
+}
+
+#[cfg(test)]
+#[path = "commits_tests.rs"]
+mod tests;

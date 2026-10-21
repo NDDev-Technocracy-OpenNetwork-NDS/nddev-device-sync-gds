@@ -10,22 +10,24 @@ repository = "https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-
 
 [features]
 default = []
+commit-sync = ["dep:base64", "dep:zeroize", "dep:tokio", "dep:tokio-util", "dep:tracing", "dep:nddev-device-sync-telemetry"]
 github-catalog = ["dep:zeroize", "dep:tokio", "dep:tokio-util", "dep:tracing", "dep:url", "dep:nddev-device-sync-telemetry", "dep:reqwest", "dep:rustls", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:gloo-timers", "dep:web-sys"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+base64 = { version = "0.23", optional = true }
 zeroize = { version = "1.8", optional = true }
 tokio = { version = "1.53", features = ["macros"], optional = true }
 tokio-util = { version = "0.7", features = ["rt"], optional = true }
 tracing = { version = "0.1", optional = true }
 url = { version = "2.5", optional = true }
 nddev-device-sync-telemetry = { version = "=0.0.1-alpha.11", git = "https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-observability", rev = "32f21f8a8f9c313bee9dcd1769c042133b5520da", optional = true }
-nddev-device-sync-domain = { version = "=0.0.12", git = "https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-core.git", rev = "f628a85bee38b837351e8621f5711d4b2958934c" }
-nddev-device-sync-application = { version = "=0.0.1-alpha.21", git = "https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-core.git", rev = "f628a85bee38b837351e8621f5711d4b2958934c" }
+nddev-device-sync-domain = { version = "=0.0.12", git = "https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-core.git", rev = "fc12893bc7e4525ed8da1fe01ea43c3d15612a81" }
+nddev-device-sync-application = { version = "=0.0.1-alpha.21", git = "https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-core.git", rev = "fc12893bc7e4525ed8da1fe01ea43c3d15612a81" }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))'.dependencies]
-nddev-device-sync-adapter-io = { version = "=0.0.1-alpha.4", git = "https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-agent", rev = "fba131111837ce1fe6c82ce6df9e3d19420f62e7" }
+nddev-device-sync-adapter-io = { version = "=0.0.1-alpha.4", git = "https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-agent", rev = "41114bdf93e05f0ddac30d78234d3061495175b0" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 reqwest = { version = "0.13.3", default-features = false, features = ["rustls-no-provider", "gzip"], optional = true }

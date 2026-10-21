@@ -12,5 +12,9 @@ catalog-check:
     cargo clippy --locked --all-targets --features github-catalog -- -D warnings
     cargo test --locked --features github-catalog
 
+commit-check:
+    cargo clippy --locked --all-targets --features github-catalog,commit-sync -- -D warnings
+    cargo test --locked --features github-catalog,commit-sync
+
 github-negative-check:
     cargo test --locked --features github-catalog --test github_provider -- --ignored

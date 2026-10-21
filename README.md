@@ -50,4 +50,28 @@ against fixed GitHub; it is denial evidence, not positive catalog acceptance.
 Browser negatives are `wasm-bindgen-test` cases served with the owned
 `scripts/check-github-browser.py` fixture. A positive provider credential fixture
 has not been supplied. Credentials/fences, shared NdsClient and CSP are separate
-owner integrations; this module performs no catalog persistence or Git writes.
+owner integrations; the catalog profile performs no persistence or Git writes.
+
+The separate opt-in `commit-sync` profile adds `commits::GitWorkspace` for an
+existing checkout under an authorized `Developer/nddev/<owner>/<repository>`
+root. Core owns portable locations and the commit cycle. The native adapter
+holds one checkout lease, checks the exact origin/upstream and local witness,
+requires a matching durable `.git/nds-binding.json` identity, fetches, and either
+pushes an existing observed commit or fast-forwards a clean
+worktree. Dirty, diverged, archived publication, partial and active-writer states remain
+explicit refusals. It creates no commits, force updates, resets or rebases.
+
+Git uses the caller's protected credential through a scoped HTTPS header outside
+argv, with no ambient Git configuration, credential helper or terminal prompt.
+Filters, included configuration, custom hooks and transport overrides are
+refused. Required caller revalidation covers every command and completion;
+cancellation, output and operation time are bounded by the existing ProcessIo.
+Raw paths, refs, command output and credentials are not telemetry fields.
+
+`just commit-check` exercises actual isolated Git publication, fast-forward,
+preservation, checkout locking, cancellation and server-side hook refusal.
+These checks establish local Git behavior; they do not establish positive
+GitHub credentials or Mac/Windows runtime acceptance. Automatic discovery,
+clone/relocation, durable selection, background scheduling and UI permission
+integration remain separate A08 composition work. The default status-only
+profile and its read-only descriptor remain unchanged.
