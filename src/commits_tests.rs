@@ -183,6 +183,79 @@ async fn actual_existing_commits_converge_both_directions_without_new_commits() 
 }
 
 #[tokio::test]
+async fn acknowledged_push_accepts_a_tracking_ref_already_advanced_by_git() {
+    let fixture = Fixture::new();
+    let local = commit(&fixture.first, "publication.txt", "existing commit");
+    let advanced = Arc::new(AtomicUsize::new(0));
+    let counted = advanced.clone();
+    let result = fixture
+        .workspace
+        .run(
+            fixture.first.clone(),
+            fixture.endpoint.clone(),
+            false,
+            "generated-invalid-token",
+            &CancellationToken::new(),
+            async || {
+                // A real separate Git ref writer at the publication boundary. Git2.56
+                // also performs this tracking update itself; older Git can leave it old.
+                if fixture.remote_head() == local && counted.fetch_add(1, Ordering::SeqCst) == 0 {
+                    git(
+                        &fixture.first,
+                        &["update-ref", "refs/remotes/origin/main", &local],
+                    );
+                }
+                Ok(())
+            },
+        )
+        .await;
+    assert_eq!(result.unwrap(), CommitOutcome::Published);
+    assert!(advanced.load(Ordering::SeqCst) > 0);
+    assert_eq!(fixture.remote_head(), local);
+    assert_eq!(
+        git(&fixture.first, &["rev-parse", "refs/remotes/origin/main"]),
+        local
+    );
+}
+
+#[tokio::test]
+async fn publication_cannot_overwrite_an_unrelated_tracking_ref_change() {
+    let fixture = Fixture::new();
+    git(&fixture.first, &["switch", "-c", "independent"]);
+    let independent = commit(&fixture.first, "independent.txt", "retained other branch");
+    git(&fixture.first, &["switch", "main"]);
+    let local = commit(&fixture.first, "publication.txt", "published branch");
+    let changed = Arc::new(AtomicUsize::new(0));
+    let count = changed.clone();
+    let result = fixture
+        .workspace
+        .run(
+            fixture.first.clone(),
+            fixture.endpoint.clone(),
+            false,
+            "generated-invalid-token",
+            &CancellationToken::new(),
+            async || {
+                if fixture.remote_head() == local && count.fetch_add(1, Ordering::SeqCst) == 0 {
+                    git(
+                        &fixture.first,
+                        &["update-ref", "refs/remotes/origin/main", &independent],
+                    );
+                }
+                Ok(())
+            },
+        )
+        .await;
+    assert_eq!(result.unwrap_err(), ModuleError::Busy);
+    assert_eq!(
+        git(&fixture.first, &["rev-parse", "refs/remotes/origin/main"]),
+        independent
+    );
+    assert_eq!(git(&fixture.first, &["rev-parse", "HEAD"]), local);
+    assert_eq!(fixture.remote_head(), local);
+}
+
+#[tokio::test]
 async fn archived_checkout_fetches_and_fast_forwards_but_cannot_publish() {
     let fixture = Fixture::new();
     let remote = commit(

@@ -185,10 +185,17 @@ impl GitWorkspace {
             let result = tokio::select! { biased;
                 () = cancellation.cancelled() => Err(ModuleError::Cancelled),
                 result = tokio::time::timeout_at(deadline, async {
-                    session.safe_configuration().await?;
-                    let result = commits::synchronize(&mut session).await?;
-                    session.validate().await?;
-                    Ok(result)
+                    let result = async {
+                        session.safe_configuration().await?;
+                        let result = commits::synchronize(&mut session).await?;
+                        session.validate().await?;
+                        Ok(result)
+                    }.await;
+                    // All owned Git commands have ended. Explicit release
+                    // avoids a transient forked child retaining this flock.
+                    // Cancellation/outer timeout still drops the owned scope.
+                    session._lease.unlock().map_err(|_| ModuleError::Unavailable)?;
+                    result
                 }) => result.unwrap_or(Err(ModuleError::Timeout)),
             };
             nddev_device_sync_telemetry::finish_operation_span(&tracing::Span::current(), nddev_device_sync_domain::modules::query_outcome(&result).terminal_failure());
@@ -597,8 +604,21 @@ impl<G: AsyncFnMut() -> Result<(), ModuleError>> SynchronizeCommits for Session<
                 .ok_or(ModuleError::InvalidResponse)?
         );
         let old = self.fetched.clone().ok_or(ModuleError::InvalidContract)?;
-        self.required(&["update-ref", &remote, &expected.head, &old])
-            .await?;
+        self.ordinary_ref(&remote).await?;
+        let current = text(
+            self.required(&["rev-parse", "--verify", &format!("{remote}^{{commit}}")])
+                .await?,
+        )?;
+        // Git may update a matching remote-tracking ref during a URL push.
+        // An already accepted commit is idempotent; another writer's value
+        // cannot authorize overwriting that ref.
+        if current != expected.head {
+            if current != old {
+                return Err(ModuleError::Busy);
+            }
+            self.required(&["update-ref", &remote, &expected.head, &old])
+                .await?;
+        }
         self.fetched = Some(expected.head.clone());
         Ok(())
     }
