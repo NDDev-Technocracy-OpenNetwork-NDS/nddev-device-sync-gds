@@ -69,14 +69,17 @@ impl GitWorkspace {
     /// Only an existing checkout in the authorized owner/repository layout.
     /// `revalidate` checks actual NDS authority, module write consent and the
     /// exact protected credential selection before EACH command and completion.
-    pub async fn synchronize(
+    pub async fn synchronize<F>(
         &self,
         location: &CheckoutLocation,
         archived: bool,
         credential: &str,
         cancellation: &CancellationToken,
-        mut revalidate: impl AsyncFnMut() -> Result<(), ModuleError>,
-    ) -> Result<CommitOutcome, ModuleError> {
+        mut revalidate: impl FnMut() -> F + Send,
+    ) -> Result<CommitOutcome, ModuleError>
+    where
+        F: std::future::Future<Output = Result<(), ModuleError>> + Send,
+    {
         location.validate()?;
         let checkout = self.root.join(location.owner()).join(location.repository());
         if checkout
@@ -107,26 +110,34 @@ impl GitWorkspace {
             archived,
             credential,
             cancellation,
-            async || {
-                revalidate().await?;
-                if read_binding(&git_dir)?.as_ref() != Some(&binding) {
-                    return Err(ModuleError::Busy);
+            move || {
+                let future = revalidate();
+                let git_dir = git_dir.clone();
+                let binding = binding.clone();
+                async move {
+                    future.await?;
+                    if read_binding(&git_dir)?.as_ref() != Some(&binding) {
+                        return Err(ModuleError::Busy);
+                    }
+                    Ok(())
                 }
-                Ok(())
             },
         )
         .await
     }
 
-    async fn run(
+    async fn run<F>(
         &self,
         checkout: PathBuf,
         endpoint: String,
         archived: bool,
         credential: &str,
         cancellation: &CancellationToken,
-        mut revalidate: impl AsyncFnMut() -> Result<(), ModuleError>,
-    ) -> Result<CommitOutcome, ModuleError> {
+        mut revalidate: impl FnMut() -> F + Send,
+    ) -> Result<CommitOutcome, ModuleError>
+    where
+        F: std::future::Future<Output = Result<(), ModuleError>> + Send,
+    {
         if credential.is_empty()
             || credential.len() > 8_192
             || !credential.bytes().all(|b| b.is_ascii_graphic())
@@ -239,7 +250,11 @@ struct Witness {
     active_writer: bool,
 }
 
-impl<G: AsyncFnMut() -> Result<(), ModuleError>> Session<'_, G> {
+impl<G, F> Session<'_, G>
+where
+    G: FnMut() -> F + Send,
+    F: std::future::Future<Output = Result<(), ModuleError>> + Send,
+{
     async fn validate(&mut self) -> Result<(), ModuleError> {
         if tokio::time::Instant::now() >= self.deadline {
             return Err(ModuleError::Timeout);
@@ -497,7 +512,11 @@ impl<G: AsyncFnMut() -> Result<(), ModuleError>> Session<'_, G> {
         self.validate().await
     }
 }
-impl<G: AsyncFnMut() -> Result<(), ModuleError>> SynchronizeCommits for Session<'_, G> {
+impl<G, F> SynchronizeCommits for Session<'_, G>
+where
+    G: FnMut() -> F + Send,
+    F: std::future::Future<Output = Result<(), ModuleError>> + Send,
+{
     type Witness = Witness;
     async fn inspect(&mut self) -> Result<Inspection<Witness>, ModuleError> {
         let witness = self.witness().await?;

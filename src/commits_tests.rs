@@ -69,7 +69,7 @@ fn native_cycle_future_is_send_for_the_existing_owned_background_task() {
         false,
         "generated-invalid-token",
         &CancellationToken::new(),
-        async || Ok(()),
+        || async { Ok(()) },
     ));
 }
 impl Fixture {
@@ -135,7 +135,7 @@ impl Fixture {
                 false,
                 "generated-invalid-token",
                 &CancellationToken::new(),
-                async || Ok(()),
+                || async { Ok(()) },
             )
             .await
     }
@@ -208,7 +208,7 @@ async fn acknowledged_push_accepts_a_tracking_ref_already_advanced_by_git() {
             false,
             "generated-invalid-token",
             &CancellationToken::new(),
-            async || {
+            || async {
                 // A real separate Git ref writer at the publication boundary. Git2.56
                 // also performs this tracking update itself; older Git can leave it old.
                 if fixture.remote_head() == local && counted.fetch_add(1, Ordering::SeqCst) == 0 {
@@ -247,7 +247,7 @@ async fn publication_cannot_overwrite_an_unrelated_tracking_ref_change() {
             false,
             "generated-invalid-token",
             &CancellationToken::new(),
-            async || {
+            || async {
                 if fixture.remote_head() == local && count.fetch_add(1, Ordering::SeqCst) == 0 {
                     git(
                         &fixture.first,
@@ -285,7 +285,7 @@ async fn archived_checkout_fetches_and_fast_forwards_but_cannot_publish() {
                 true,
                 "generated-invalid-token",
                 &CancellationToken::new(),
-                async || Ok(()),
+                || async { Ok(()) },
             )
             .await
     };
@@ -381,11 +381,14 @@ async fn real_checkout_lease_and_cancellation_cannot_start_a_second_writer() {
                 false,
                 "generated-invalid-token",
                 &CancellationToken::new(),
-                async move || {
-                    if counted.fetch_add(1, Ordering::SeqCst) >= 3 {
-                        Err(ModuleError::Cancelled)
-                    } else {
-                        Ok(())
+                move || {
+                    let counted = counted.clone();
+                    async move {
+                        if counted.fetch_add(1, Ordering::SeqCst) >= 3 {
+                            Err(ModuleError::Cancelled)
+                        } else {
+                            Ok(())
+                        }
                     }
                 }
             )
@@ -507,7 +510,7 @@ async fn public_workspace_checks_owner_layout_and_exact_remote_before_network() 
                 false,
                 "generated-invalid-token",
                 &CancellationToken::new(),
-                async || Ok(())
+                || async { Ok(()) }
             )
             .await
             .unwrap_err(),
@@ -533,7 +536,7 @@ async fn public_workspace_checks_owner_layout_and_exact_remote_before_network() 
                 false,
                 "generated-invalid-token",
                 &CancellationToken::new(),
-                async || Ok(())
+                || async { Ok(()) }
             )
             .await
             .unwrap(),
@@ -551,7 +554,7 @@ async fn public_workspace_checks_owner_layout_and_exact_remote_before_network() 
                 false,
                 "generated-invalid-token",
                 &CancellationToken::new(),
-                async || Ok(())
+                || async { Ok(()) }
             )
             .await
             .unwrap(),
@@ -576,7 +579,7 @@ async fn public_workspace_checks_owner_layout_and_exact_remote_before_network() 
                     false,
                     "generated-invalid-token",
                     &CancellationToken::new(),
-                    async || Ok(())
+                    || async { Ok(()) }
                 )
                 .await
                 .unwrap_err(),

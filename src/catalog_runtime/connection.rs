@@ -80,7 +80,7 @@ impl CatalogClient {
         {
             return Ok(blocked(ConnectionBlock::RelocationRequired, &location));
         }
-        let credential = self.vault.native_secret_at(&guard.selection).await?;
+        let credential = Arc::new(self.vault.native_secret_at(&guard.selection).await?);
         fresh_repository(&guard, &location, credential.as_str(), &flight.cancellation).await?;
         // A confirmation is required at publication too. If the first read used
         // the last provider budget, avoid cloning a tree we cannot yet confirm.
@@ -105,14 +105,21 @@ impl CatalogClient {
                     let errors = errors.clone();
                     move || revalidation(guard.clone(), errors.clone())
                 },
-                async || {
-                    fresh_repository(&guard, &location, credential.as_str(), &flight.cancellation)
-                        .await
-                        .map(|_| ())
-                        .map_err(|error| {
-                            *errors.lock().unwrap_or_else(|e| e.into_inner()) = Some(error);
-                            module_error(error)
-                        })
+                {
+                    let guard = guard.clone();
+                    let location = location.clone();
+                    let credential = credential.clone();
+                    let cancellation = flight.cancellation.clone();
+                    let errors = errors.clone();
+                    move || {
+                        confirmation(
+                            guard.clone(),
+                            location.clone(),
+                            credential.clone(),
+                            cancellation.clone(),
+                            errors.clone(),
+                        )
+                    }
                 },
             )
             .await
@@ -214,4 +221,36 @@ async fn fresh_repository(
     }
     guard.module.observe(&result);
     result.map_err(Into::into)
+}
+
+#[cfg(all(feature = "commit-sync", any(target_os = "linux", target_os = "macos")))]
+fn confirmation(
+    guard: CatalogUseGuard,
+    location: CheckoutLocation,
+    credential: Arc<zeroize::Zeroizing<String>>,
+    cancellation: Arc<CancellationToken>,
+    errors: Arc<Mutex<Option<GithubCatalogError>>>,
+) -> GuardFuture {
+    Box::pin(async move {
+        fresh_repository(&guard, &location, credential.as_str(), &cancellation)
+            .await
+            .map(|_| ())
+            .map_err(|error| {
+                *errors.lock().unwrap_or_else(|error| error.into_inner()) = Some(error);
+                module_error(error)
+            })
+    })
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod executor_contract {
+    use super::*;
+    #[test]
+    fn public_connection_future_fits_the_existing_native_executor() {
+        fn require_send<T: std::future::Future + Send>(_: T) {}
+        fn check(client: &CatalogClient, location: CheckoutLocation) {
+            require_send(client.connect_repository(location));
+        }
+        let _compile_contract = check;
+    }
 }

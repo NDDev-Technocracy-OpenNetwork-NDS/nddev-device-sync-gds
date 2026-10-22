@@ -88,9 +88,9 @@ fn collision(directory: &Path, name: &str) -> Result<bool, ModuleError> {
     Ok(false)
 }
 
-async fn authorize(
+async fn authorize<F: std::future::Future<Output = Result<(), ModuleError>> + Send>(
     cancellation: &CancellationToken,
-    revalidate: &mut impl AsyncFnMut() -> Result<(), ModuleError>,
+    revalidate: &mut (impl FnMut() -> F + Send),
 ) -> Result<(), ModuleError> {
     tokio::select! { biased;
         () = cancellation.cancelled() => Err(ModuleError::Cancelled),
@@ -101,23 +101,21 @@ async fn authorize(
 impl GitWorkspace {
     /// The UI supplies no filesystem path. A caller may initialize only the
     /// canonical home-relative workspace, after checking its write grant.
-    pub async fn default_workspace(
+    pub async fn default_workspace<
+        F: std::future::Future<Output = Result<(), ModuleError>> + Send,
+    >(
         principal: WorkspacePrincipal,
-        mut revalidate: impl AsyncFnMut() -> Result<(), ModuleError>,
+        mut revalidate: impl FnMut() -> F + Send,
     ) -> Result<Self, ModuleError> {
-        let mut admitted = async || {
-            tokio::time::timeout(Duration::from_secs(10), revalidate())
-                .await
-                .unwrap_or(Err(ModuleError::Timeout))
-        };
-        admitted().await?;
+        let mut admitted = || tokio::time::timeout(Duration::from_secs(10), revalidate());
+        admitted().await.unwrap_or(Err(ModuleError::Timeout))?;
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())
             .ok_or(ModuleError::Unavailable)?;
         let mut root = home.canonicalize().map_err(|_| ModuleError::Unavailable)?;
         for component in ["Developer", "nddev"] {
-            admitted().await?;
+            admitted().await.unwrap_or(Err(ModuleError::Timeout))?;
             let parent = open_directory(&root)?;
             match rustix::fs::mkdirat(&parent, component, Mode::RWXU) {
                 Ok(()) => parent.sync_all().map_err(|_| ModuleError::Unavailable)?,
@@ -127,7 +125,7 @@ impl GitWorkspace {
             root.push(component);
             open_directory(&root)?;
         }
-        admitted().await?;
+        admitted().await.unwrap_or(Err(ModuleError::Timeout))?;
         let paths = std::env::var_os("PATH").ok_or(ModuleError::Unavailable)?;
         let git = std::env::split_paths(&paths)
             .take(64)
@@ -147,14 +145,18 @@ impl GitWorkspace {
         )
     }
 
-    pub async fn connect(
+    pub async fn connect<F, C>(
         &self,
         location: &CheckoutLocation,
         credential: &str,
         cancellation: &CancellationToken,
-        mut revalidate: impl AsyncFnMut() -> Result<(), ModuleError>,
-        mut confirm_repository: impl AsyncFnMut() -> Result<(), ModuleError>,
-    ) -> Result<ConnectionOutcome, ModuleError> {
+        mut revalidate: impl FnMut() -> F + Send,
+        mut confirm_repository: impl FnMut() -> C + Send,
+    ) -> Result<ConnectionOutcome, ModuleError>
+    where
+        F: std::future::Future<Output = Result<(), ModuleError>> + Send,
+        C: std::future::Future<Output = Result<(), ModuleError>> + Send,
+    {
         location.validate()?;
         if credential.is_empty()
             || credential.len() > 8192
@@ -286,7 +288,7 @@ impl GitWorkspace {
             location: location.clone(),
         }
     }
-    fn connection_session<G: AsyncFnMut() -> Result<(), ModuleError>>(
+    fn connection_session<G, F>(
         &self,
         checkout: PathBuf,
         location: &CheckoutLocation,
@@ -294,7 +296,11 @@ impl GitWorkspace {
         cancellation: &CancellationToken,
         revalidate: G,
         lease: File,
-    ) -> Result<Session<'_, G>, ModuleError> {
+    ) -> Result<Session<'_, G>, ModuleError>
+    where
+        G: FnMut() -> F + Send,
+        F: std::future::Future<Output = Result<(), ModuleError>> + Send,
+    {
         let input = Zeroizing::new(format!("x-access-token:{credential}"));
         let mut authorization = Zeroizing::new(String::from("Authorization: Basic "));
         STANDARD.encode_string(input.as_bytes(), &mut authorization);
@@ -313,15 +319,19 @@ impl GitWorkspace {
             deadline: tokio::time::Instant::now() + Duration::from_secs(120),
         })
     }
-    async fn clone_at(
+    async fn clone_at<F, C>(
         &self,
         location: &CheckoutLocation,
         credential: &str,
         cancellation: &CancellationToken,
-        revalidate: &mut impl AsyncFnMut() -> Result<(), ModuleError>,
-        confirm_repository: &mut impl AsyncFnMut() -> Result<(), ModuleError>,
+        revalidate: &mut (impl FnMut() -> F + Send),
+        confirm_repository: &mut (impl FnMut() -> C + Send),
         owner: &File,
-    ) -> Result<ConnectionOutcome, ModuleError> {
+    ) -> Result<ConnectionOutcome, ModuleError>
+    where
+        F: std::future::Future<Output = Result<(), ModuleError>> + Send,
+        C: std::future::Future<Output = Result<(), ModuleError>> + Send,
+    {
         let stage = tempfile::Builder::new()
             .prefix(".nds-stage-")
             .tempdir_in(&self.root)

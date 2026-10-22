@@ -50,8 +50,8 @@ async fn provider_identity_refusal_after_clone_cannot_publish_the_worktree() {
             &location,
             "generated-invalid-token",
             &CancellationToken::new(),
-            async || Ok(()),
-            async || Err(ModuleError::InvalidResponse),
+            || async { Ok(()) },
+            || async { Err(ModuleError::InvalidResponse) },
         )
         .await;
     assert!(matches!(result, Err(ModuleError::InvalidResponse)));
@@ -73,11 +73,11 @@ async fn already_cancelled_connection_never_waits_on_an_authority_callback() {
             &location,
             "generated-invalid-token",
             &cancellation,
-            async || {
+            || async {
                 calls.fetch_add(1, Ordering::SeqCst);
                 std::future::pending().await
             },
-            async || Ok(()),
+            || async { Ok(()) },
         ),
     )
     .await
@@ -97,8 +97,8 @@ async fn real_clone_is_scoped_idempotent_and_supports_existing_commit_publicatio
             &location,
             "generated-invalid-token",
             &CancellationToken::new(),
-            async || Ok(()),
-            async || Ok(()),
+            || async { Ok(()) },
+            || async { Ok(()) },
         )
         .await
         .unwrap();
@@ -126,8 +126,8 @@ async fn real_clone_is_scoped_idempotent_and_supports_existing_commit_publicatio
                 &location,
                 "generated-invalid-token",
                 &CancellationToken::new(),
-                async || Ok(()),
-                async || Ok(()),
+                || async { Ok(()) },
+                || async { Ok(()) },
             )
             .await
             .unwrap(),
@@ -141,7 +141,7 @@ async fn real_clone_is_scoped_idempotent_and_supports_existing_commit_publicatio
                 false,
                 "generated-invalid-token",
                 &CancellationToken::new(),
-                async || Ok(())
+                || async { Ok(()) }
             )
             .await
             .unwrap(),
@@ -176,8 +176,8 @@ async fn explicit_adoption_preserves_ssh_origin_dirty_work_index_and_branches() 
                 &location,
                 "generated-invalid-token",
                 &CancellationToken::new(),
-                async || Ok(()),
-                async || Ok(()),
+                || async { Ok(()) },
+                || async { Ok(()) },
             )
             .await
             .unwrap(),
@@ -211,8 +211,8 @@ async fn active_writers_and_a_different_nds_account_never_receive_a_binding() {
                 &location,
                 "generated-invalid-token",
                 &CancellationToken::new(),
-                async || Ok(()),
-                async || Ok(())
+                || async { Ok(()) },
+                || async { Ok(()) }
             )
             .await
             .unwrap(),
@@ -226,8 +226,8 @@ async fn active_writers_and_a_different_nds_account_never_receive_a_binding() {
                 &location,
                 "generated-invalid-token",
                 &CancellationToken::new(),
-                async || Ok(()),
-                async || Ok(()),
+                || async { Ok(()) },
+                || async { Ok(()) },
             )
             .await
             .unwrap(),
@@ -240,8 +240,8 @@ async fn active_writers_and_a_different_nds_account_never_receive_a_binding() {
                 &location,
                 "generated-invalid-token",
                 &CancellationToken::new(),
-                async || Ok(()),
-                async || Ok(())
+                || async { Ok(()) },
+                || async { Ok(()) }
             )
             .await
             .unwrap(),
@@ -268,8 +268,8 @@ async fn occupied_paths_symlinks_and_case_collisions_preserve_user_content() {
                 &location,
                 "generated-invalid-token",
                 &CancellationToken::new(),
-                async || Ok(()),
-                async || Ok(())
+                || async { Ok(()) },
+                || async { Ok(()) }
             )
             .await
             .unwrap(),
@@ -287,8 +287,8 @@ async fn occupied_paths_symlinks_and_case_collisions_preserve_user_content() {
                 &alias,
                 "generated-invalid-token",
                 &CancellationToken::new(),
-                async || Ok(()),
-                async || Ok(())
+                || async { Ok(()) },
+                || async { Ok(()) }
             )
             .await
             .unwrap(),
@@ -301,8 +301,8 @@ async fn occupied_paths_symlinks_and_case_collisions_preserve_user_content() {
                 &case,
                 "generated-invalid-token",
                 &CancellationToken::new(),
-                async || Ok(()),
-                async || Ok(())
+                || async { Ok(()) },
+                || async { Ok(()) }
             )
             .await
             .unwrap(),
@@ -323,7 +323,7 @@ async fn publication_never_replaces_even_an_empty_directory_created_during_clone
             &location,
             "generated-invalid-token",
             &CancellationToken::new(),
-            async || {
+            || async {
                 if stages(&f.workspace.root)
                     .iter()
                     .any(|path| path.join("checkout/.git/nds-binding.json").is_file())
@@ -334,7 +334,7 @@ async fn publication_never_replaces_even_an_empty_directory_created_during_clone
                 }
                 Ok(())
             },
-            async || Ok(()),
+            || async { Ok(()) },
         )
         .await
         .unwrap();
@@ -362,7 +362,7 @@ async fn cancellation_before_publication_cleans_only_the_owned_staging_checkout(
             &location,
             "generated-invalid-token",
             &CancellationToken::new(),
-            async || {
+            || async {
                 if stages(&f.workspace.root)
                     .iter()
                     .any(|path| path.join("checkout/.git/nds-binding.json").is_file())
@@ -371,7 +371,7 @@ async fn cancellation_before_publication_cleans_only_the_owned_staging_checkout(
                 }
                 Ok(())
             },
-            async || Ok(()),
+            || async { Ok(()) },
         )
         .await;
     assert!(matches!(result, Err(ModuleError::Cancelled)));
@@ -400,8 +400,8 @@ async fn object_alternates_are_refused_without_reading_an_external_repository() 
                 &location,
                 "generated-invalid-token",
                 &CancellationToken::new(),
-                async || Ok(()),
-                async || Ok(())
+                || async { Ok(()) },
+                || async { Ok(()) }
             )
             .await,
         Err(ModuleError::Unavailable)
