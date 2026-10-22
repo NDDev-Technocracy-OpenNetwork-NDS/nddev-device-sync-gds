@@ -24,6 +24,11 @@ jobs:
           persist-credentials: false
       - name: Install pinned Rust
         run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy
+      - name: Install Linux credential-store build inputs
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends libsecret-1-dev pkg-config
       - name: Format
         run: cargo fmt --all -- --check
       - name: Lint
@@ -32,13 +37,13 @@ jobs:
         run: cargo test --locked --workspace
       - name: Catalog and existing-commit native acceptance
         run: |
-          cargo clippy --locked --all-targets --features github-catalog,commit-sync -- -D warnings
-          cargo test --locked --features github-catalog,commit-sync
+          cargo clippy --locked --all-targets --features catalog-runtime,commit-sync -- -D warnings
+          cargo test --locked --features catalog-runtime,commit-sync
       - name: Catalog WASM code check (not browser runtime acceptance)
         if: runner.os == 'Linux'
         run: |
           rustup target add wasm32-unknown-unknown --toolchain 1.99.1
-          cargo check --locked --lib --features github-catalog --target wasm32-unknown-unknown
+          cargo check --locked --lib --features browser-bindings --target wasm32-unknown-unknown
       - name: Dependency policy and advisory checks
         if: runner.os == 'Linux'
         run: |

@@ -1,4 +1,4 @@
-//! Fixed authenticated GitHub read adapter. The NdsClient credential owner
+//! Fixed authenticated GitHub read adapter. The protected Vault credential owner
 //! lends a token only for this future; it never enters a DTO or a core request.
 use nddev_device_sync_domain::{
     modules::{ModuleError, query_outcome},
@@ -17,12 +17,43 @@ mod platform;
 #[path = "github/browser.rs"]
 mod platform;
 
+mod cache;
+mod limits;
+pub(crate) use cache::CatalogCache;
 mod link;
 
 const ORIGIN: &str = "https://api.github.com";
 const API_VERSION: &str = "2026-03-10";
 const MAX_BODY: usize = 1_048_576;
 const DEADLINE: Duration = Duration::from_secs(10);
+
+// The fixed-origin transport retains no credentials. Requests still borrow
+// their own token and original authorization callback for one bounded flight.
+static CLIENT: std::sync::OnceLock<platform::Client> = std::sync::OnceLock::new();
+fn shared_client() -> Result<&'static platform::Client, ModuleError> {
+    if let Some(client) = CLIENT.get() {
+        return Ok(client);
+    }
+    let _ = CLIENT.set(platform::Client::new()?);
+    CLIENT.get().ok_or(ModuleError::Unavailable)
+}
+
+/// The shared fixed-origin transport retains a refusal across cursor/source edits.
+#[cfg(feature = "catalog-runtime")]
+pub(crate) fn retry_delay() -> Duration {
+    CLIENT
+        .get()
+        .and_then(|client| {
+            now_ms().ok().map(|now| {
+                client
+                    .limits
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .remaining(now)
+            })
+        })
+        .unwrap_or_default()
+}
 
 /// `revalidate` is mandatory: the NdsClient owner rechecks its actual Accounts
 /// fence and selected Vault version before each GET and before result return.
@@ -33,10 +64,19 @@ pub async fn read_user_and_page(
     cancellation: &CancellationToken,
     mut revalidate: impl AsyncFnMut() -> Result<(), ModuleError>,
 ) -> Result<ProviderRepositoryPage, ModuleError> {
+    observed(credential, request, cancellation, &mut revalidate, None).await
+}
+async fn observed(
+    credential: &str,
+    request: &CatalogPageRequest,
+    cancellation: &CancellationToken,
+    revalidate: &mut impl AsyncFnMut() -> Result<(), ModuleError>,
+    cache: Option<(&CatalogCache, &str)>,
+) -> Result<ProviderRepositoryPage, ModuleError> {
     let span = nddev_device_sync_telemetry::operation_span("gds", "io")
         .map_err(|_| ModuleError::InvalidContract)?;
     async {
-        let result = bounded_read(credential, request, cancellation, &mut revalidate).await;
+        let result = bounded_read(credential, request, cancellation, revalidate, cache).await;
         nddev_device_sync_telemetry::finish_operation_span(
             &tracing::Span::current(), query_outcome(&result).terminal_failure(),
         );
@@ -48,11 +88,31 @@ pub async fn read_user_and_page(
     }.instrument(span).await
 }
 
+#[cfg(feature = "catalog-runtime")]
+pub(crate) async fn read_cached(
+    cache: &CatalogCache,
+    scope: &str,
+    credential: &str,
+    request: &CatalogPageRequest,
+    cancellation: &CancellationToken,
+    mut revalidate: impl AsyncFnMut() -> Result<(), ModuleError>,
+) -> Result<ProviderRepositoryPage, ModuleError> {
+    observed(
+        credential,
+        request,
+        cancellation,
+        &mut revalidate,
+        Some((cache, scope)),
+    )
+    .await
+}
+
 async fn bounded_read(
     credential: &str,
     request: &CatalogPageRequest,
     cancellation: &CancellationToken,
     revalidate: &mut impl AsyncFnMut() -> Result<(), ModuleError>,
+    cache: Option<(&CatalogCache, &str)>,
 ) -> Result<ProviderRepositoryPage, ModuleError> {
     if credential.is_empty()
         || credential.len() > 16_384
@@ -63,8 +123,29 @@ async fn bounded_read(
     if cancellation.is_cancelled() {
         return Err(ModuleError::Cancelled);
     }
-    let client = platform::Client::new()?;
-    bounded_client(&client, credential, request, cancellation, revalidate).await
+    match cache {
+        Some(cache) => {
+            bounded_cached_client(
+                shared_client()?,
+                credential,
+                request,
+                cancellation,
+                revalidate,
+                Some(cache),
+            )
+            .await
+        }
+        None => {
+            bounded_client(
+                shared_client()?,
+                credential,
+                request,
+                cancellation,
+                revalidate,
+            )
+            .await
+        }
+    }
 }
 async fn bounded_client(
     client: &platform::Client,
@@ -73,7 +154,28 @@ async fn bounded_client(
     cancellation: &CancellationToken,
     revalidate: &mut impl AsyncFnMut() -> Result<(), ModuleError>,
 ) -> Result<ProviderRepositoryPage, ModuleError> {
-    let work = read(client, credential, request, revalidate);
+    bounded_cached_client(client, credential, request, cancellation, revalidate, None).await
+}
+async fn bounded_cached_client(
+    client: &platform::Client,
+    credential: &str,
+    request: &CatalogPageRequest,
+    cancellation: &CancellationToken,
+    revalidate: &mut impl AsyncFnMut() -> Result<(), ModuleError>,
+    cache: Option<(&CatalogCache, &str)>,
+) -> Result<ProviderRepositoryPage, ModuleError> {
+    let work = async {
+        let _admission = client
+            .admission
+            .try_acquire()
+            .map_err(|_| ModuleError::Busy)?;
+        client
+            .limits
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .admit(now_ms()?)?;
+        read(client, credential, request, revalidate, cache).await
+    };
     #[cfg(not(target_arch = "wasm32"))]
     {
         tokio::select! { biased;
@@ -96,14 +198,11 @@ async fn read(
     credential: &str,
     request: &CatalogPageRequest,
     revalidate: &mut impl AsyncFnMut() -> Result<(), ModuleError>,
+    cache: Option<(&CatalogCache, &str)>,
 ) -> Result<ProviderRepositoryPage, ModuleError> {
     revalidate().await?;
-    let principal = {
-        let response = client.get(credential, Route::User).await?;
-        let value: OwnerWire =
-            serde_json::from_slice(&response.body).map_err(|_| ModuleError::InvalidResponse)?;
-        value.decode()?
-    };
+    let cached = cache.map(|(cache, scope)| cache.snapshot(scope, request.page()));
+    let principal = cache::user(client, credential, cached.as_ref(), cache).await?;
     if principal.kind != GithubOwnerKind::User
         || request
             .expected_principal()
@@ -112,19 +211,8 @@ async fn read(
         return Err(ModuleError::InvalidResponse);
     }
     revalidate().await?;
-    let response = client
-        .get(credential, Route::Repositories(request.page()))
-        .await?;
-    let has_more = next_page(response.link.as_deref(), request.page())?;
-    let rows: Vec<RepositoryWire> =
-        serde_json::from_slice(&response.body).map_err(|_| ModuleError::InvalidResponse)?;
-    if rows.len() > REPOSITORIES_PER_PAGE {
-        return Err(ModuleError::InvalidResponse);
-    }
-    let repositories = rows
-        .into_iter()
-        .map(RepositoryWire::decode)
-        .collect::<Result<_, _>>()?;
+    let (repositories, has_more) =
+        cache::repositories(client, credential, request.page(), cached.as_ref(), cache).await?;
     revalidate().await?;
     Ok(ProviderRepositoryPage {
         principal,
@@ -134,6 +222,7 @@ async fn read(
     })
 }
 
+#[derive(Clone, Copy)]
 enum Route {
     User,
     Repositories(u8),
@@ -149,6 +238,8 @@ impl Route {
     }
 }
 struct Reply {
+    unchanged: bool,
+    etag: Option<String>,
     body: Zeroizing<Vec<u8>>,
     link: Option<String>,
 }
@@ -162,10 +253,14 @@ fn status(
         module = "gds",
         scope = "io",
         status,
-        outcome = if status == 200 { "ok" } else { "rejected" }
+        outcome = if matches!(status, 200 | 304) {
+            "ok"
+        } else {
+            "rejected"
+        }
     );
     match status {
-        200 => Ok(()),
+        200 | 304 => Ok(()),
         429 => Err(ModuleError::Busy),
         403 if rate_remaining == Some("0") || retry_after.is_some() => Err(ModuleError::Busy),
         401 | 403 | 404 => Err(ModuleError::Unavailable),
@@ -267,7 +362,7 @@ impl RepositoryWire {
         })
     }
 }
-fn now_ms() -> Result<u64, ModuleError> {
+pub(crate) fn now_ms() -> Result<u64, ModuleError> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         std::time::SystemTime::now()

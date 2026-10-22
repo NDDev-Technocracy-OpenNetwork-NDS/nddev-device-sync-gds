@@ -6,6 +6,8 @@ use web_sys::{AbortController, Request, RequestInit, Response};
 use zeroize::Zeroizing;
 
 pub(super) struct Client {
+    pub(super) admission: tokio::sync::Semaphore,
+    pub(super) limits: std::sync::Mutex<super::limits::Limits>,
     #[cfg(test)]
     origin: Option<String>,
 }
@@ -18,11 +20,22 @@ impl Drop for Abort {
 impl Client {
     pub(super) fn new() -> Result<Self, ModuleError> {
         Ok(Self {
+            admission: tokio::sync::Semaphore::new(1),
+            limits: std::sync::Mutex::default(),
             #[cfg(test)]
             origin: None,
         })
     }
-    pub(super) async fn get(&self, credential: &str, route: Route) -> Result<Reply, ModuleError> {
+    pub(super) async fn get(
+        &self,
+        credential: &str,
+        route: Route,
+        etag: Option<&str>,
+    ) -> Result<Reply, ModuleError> {
+        self.limits
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .admit(super::now_ms()?)?;
         let window = web_sys::window().ok_or(ModuleError::Unavailable)?;
         let abort = Abort(AbortController::new().map_err(|_| ModuleError::Unavailable)?);
         let options = RequestInit::new();
@@ -52,11 +65,28 @@ impl Client {
             .headers()
             .set("X-GitHub-Api-Version", API_VERSION)
             .map_err(|_| ModuleError::InvalidInput)?;
+        if let Some(etag) = etag {
+            request
+                .headers()
+                .set("If-None-Match", etag)
+                .map_err(|_| ModuleError::InvalidResponse)?;
+        }
         let response = JsFuture::from(window.fetch_with_request(&request))
             .await
             .map_err(|_| ModuleError::ProviderFailed)?
             .dyn_into::<Response>()
             .map_err(|_| ModuleError::InvalidResponse)?;
+        let header = |name| response.headers().get(name).ok().flatten();
+        self.limits
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .observe(
+                super::now_ms()?,
+                response.status(),
+                header("x-ratelimit-remaining").as_deref(),
+                header("x-ratelimit-reset").as_deref(),
+                header("retry-after").as_deref(),
+            );
         status(
             response.status(),
             response
@@ -74,6 +104,21 @@ impl Client {
             .headers()
             .get("link")
             .map_err(|_| ModuleError::InvalidResponse)?;
+        let unchanged = response.status() == 304;
+        let etag = response
+            .headers()
+            .get("etag")
+            .ok()
+            .flatten()
+            .filter(|value| value.len() <= 512 && value.is_ascii());
+        if unchanged {
+            return Ok(Reply {
+                unchanged,
+                etag,
+                body: Zeroizing::new(Vec::new()),
+                link,
+            });
+        }
         let stream = response.body().ok_or(ModuleError::InvalidResponse)?;
         let reader = stream
             .get_reader()
@@ -107,7 +152,12 @@ impl Client {
         reader.release_lock();
         // No JS/Dart DTO contains headers/token/body; only parsed Rust metadata
         // escapes this adapter. JS engine copies are not a memory-erasure claim.
-        Ok(Reply { body, link })
+        Ok(Reply {
+            unchanged,
+            etag,
+            body,
+            link,
+        })
     }
 }
 
@@ -122,6 +172,8 @@ mod tests {
     wasm_bindgen_test_configure!(run_in_browser);
     fn fixture(case: &str) -> Client {
         Client {
+            admission: tokio::sync::Semaphore::new(1),
+            limits: std::sync::Mutex::default(),
             origin: Some(format!("http://127.0.0.1:19483/{case}")),
         }
     }

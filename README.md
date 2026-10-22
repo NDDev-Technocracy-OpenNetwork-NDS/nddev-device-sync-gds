@@ -25,16 +25,16 @@ preservation, incomplete submodule reads, allocation bounds and cancellation.
 There is no backup/recovery implementation or private estate configuration.
 
 The opt-in `github-catalog` feature exposes one fixed authenticated
-`github::read_user_and_page` Rust adapter for the session-owned NdsClient caller.
+`github::read_user_and_page` Rust adapter for the authorized Rust caller.
 Default worker builds do not compile that HTTP client/SDK path. The caller lends
 its protected repository credential inside Rust; NDS sign-in credentials,
-ambient `gh` configuration and presentation tokens are not used. Core20 owns
+ambient `gh` configuration and presentation tokens are not used. Canonical Core owns
 ID validation, owner grouping and scoped continuation.
 
 The adapter calls only GitHub `/user` and `/user/repos` with API `2026-03-10`,
 page25, a1MiB decoded response cap and one10s deadline/cancellation lifetime.
 It rejects redirects, uses no cookies, and returns generic structured errors.
-Its mandatory async `revalidate` callback belongs to NdsClient: it checks the
+Its mandatory async `revalidate` callback belongs to the original caller: it checks the
 actual Accounts authorization fence and selected Vault revision/pending ID
 before each provider GET and before returning metadata, within that deadline.
 There is no default production bypass; transport fixtures are not real-store
@@ -72,7 +72,31 @@ Raw paths, refs, command output and credentials are not telemetry fields.
 `just commit-check` exercises actual isolated Git publication, fast-forward,
 preservation, checkout locking, cancellation and server-side hook refusal.
 These checks establish local Git behavior; they do not establish positive
-GitHub credentials or Mac/Windows runtime acceptance. Automatic discovery,
-clone/relocation, durable selection, background scheduling and UI permission
-integration remain separate A08 composition work. The default status-only
+GitHub credentials or Mac/Windows runtime acceptance. Git clone/relocation and activation of automatic commit synchronization remain
+separate A08 composition work. The default status-only
 profile and its read-only descriptor remain unchanged.
+
+The opt-in `catalog-runtime` feature is the shared catalog composition used by
+GUI and CLI. It retains independent foreground and background cursors over the
+same Core decisions, encrypted Vault state, original caller fences and provider
+admission. Only the existing elected Vault replica invokes its collector after
+catch-up; a follower does not start GitHub collection. Native window disposal
+leaves that owner running. No additional scheduler or daemon is installed.
+
+Enabled GDS requires this device's read-only, credential-store and local-network
+consent and the saved owner-wide GitHub source. Every provider read and encrypted
+publication rechecks that original source, consent and credential. A stale GUI
+caller cannot borrow the retained owner's authorization. Catalog failures have
+their own observation and never masquerade as a Vault replication failure.
+Health is projected for its observed source and consent; each retained resource
+keeps its original owner authority lifetime.
+
+Complete traversals are checked every five minutes. Bounded parsed metadata and
+ETags are retained only in memory for one immutable source, with authorization
+rechecked even on `304`. Fixed-origin HTTP requests are serialized and honor
+both `Retry-After` and primary quota reset. Missing secondary-limit headers cause
+exponential pauses starting at one minute; six refusals end the retry episode
+with an hour pause before a later probe. No credentials or response bodies enter
+that cache or telemetry. `cargo test --features catalog-runtime,commit-sync` also
+checks conditional reads, source isolation and actual transport refusal. These
+controlled HTTP checks do not qualify positive GitHub access.
