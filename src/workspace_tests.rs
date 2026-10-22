@@ -436,3 +436,35 @@ async fn moved_owner_directory_cannot_receive_a_clone_or_remove_its_replacement(
     assert!(!moved.join("third").exists());
     assert!(stages(&f.workspace.root).is_empty());
 }
+
+#[tokio::test]
+async fn adoption_rejects_a_git_directory_replaced_during_confirmation() {
+    let f = Fixture::new();
+    let location = fixture_location("personal", "first");
+    git(
+        &f.first,
+        &["config", "remote.origin.url", &location.https_url()],
+    );
+    let directory = f.first.join(".git");
+    let moved = f.first.parent().unwrap().join("first-git-held");
+    let result = f
+        .workspace
+        .connect(
+            &location,
+            "generated-invalid-token",
+            &CancellationToken::new(),
+            || async { Ok(()) },
+            || {
+                std::fs::rename(&directory, &moved).unwrap();
+                std::os::unix::fs::symlink(&moved, &directory).unwrap();
+                async { Ok(()) }
+            },
+        )
+        .await;
+    assert!(matches!(result, Err(ModuleError::Busy)));
+    assert!(!moved.join("nds-binding.json").exists());
+    assert!(
+        directory.is_symlink(),
+        "concurrent user path must be preserved"
+    );
+}

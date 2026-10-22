@@ -277,6 +277,9 @@ impl GitWorkspace {
             ConnectionDecision::AlreadyConnected => {
                 authorize(cancellation, &mut confirm_repository).await?;
                 session.validate().await?;
+                if !same_directory(&session.git_dir, &directory) {
+                    return Err(ModuleError::Busy);
+                }
                 Ok(ConnectionOutcome::Connected {
                     binding: binding.ok_or(ModuleError::InvalidContract)?,
                     created: false,
@@ -285,12 +288,17 @@ impl GitWorkspace {
             ConnectionDecision::Adopt => {
                 authorize(cancellation, &mut confirm_repository).await?;
                 session.validate().await?;
-                if session.witness().await? != snapshot {
+                if session.witness().await? != snapshot
+                    || !same_directory(&session.git_dir, &directory)
+                {
                     return Err(ModuleError::Busy);
                 }
                 let binding = self.new_binding(location);
                 write_binding(&directory, &binding)?;
                 session.validate().await?;
+                if !same_directory(&session.git_dir, &directory) {
+                    return Err(ModuleError::Busy);
+                }
                 Ok(ConnectionOutcome::Connected {
                     binding,
                     created: false,
