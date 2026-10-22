@@ -34,7 +34,7 @@ pub struct CatalogRuntime {
 }
 struct WorkSchedule {
     epoch: Option<(Option<String>, Option<String>)>,
-    next: nddev_device_sync_accounts::runtime::Instant,
+    next: Option<nddev_device_sync_accounts::runtime::Instant>,
 }
 impl CatalogRuntime {
     pub fn new(identity: Arc<IdentityClient>, vault: Arc<VaultClient>) -> Self {
@@ -57,7 +57,7 @@ impl CatalogRuntime {
             vault,
             work: Mutex::new(WorkSchedule {
                 epoch: None,
-                next: nddev_device_sync_accounts::runtime::Instant::now(),
+                next: Some(nddev_device_sync_accounts::runtime::Instant::now()),
             }),
         }
     }
@@ -91,7 +91,7 @@ impl CatalogRuntime {
             let changed = work.epoch.as_ref() != Some(&epoch);
             if changed {
                 work.epoch = Some(epoch);
-                work.next = Instant::now();
+                work.next = Some(Instant::now());
             }
             changed
         };
@@ -112,12 +112,12 @@ impl CatalogRuntime {
         {
             return Ok(false);
         }
-        if Instant::now()
-            < self
-                .work
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .next
+        if self
+            .work
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .next
+            .is_none_or(|next| Instant::now() < next)
         {
             return Ok(false);
         }
@@ -147,7 +147,7 @@ impl CatalogRuntime {
         self.work
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .next = Instant::now() + delay;
+            .next = Instant::now().checked_add(delay);
         Ok(more)
     }
 }
@@ -160,14 +160,24 @@ impl nddev_device_sync_application::repositories::catalog::collection::CatalogCo
     ) -> nddev_device_sync_application::repositories::catalog::collection::Collection {
         Box::pin(async move {
             let before = self.vault.snapshot().local_revision;
-            let result = nddev_device_sync_accounts::runtime::timeout(
-                std::time::Duration::from_secs(15),
-                self.collect_page(),
+            let result = observe(
+                "gds",
+                "gds.catalog.collection",
+                async {
+                    nddev_device_sync_accounts::runtime::timeout(
+                        std::time::Duration::from_secs(15),
+                        self.collect_page(),
+                    )
+                    .await
+                    .map_err(|_| view::GithubCatalogError::Timeout)?
+                },
+                view::GithubCatalogError::Unavailable,
+                classify_error,
             )
             .await;
             nddev_device_sync_application::repositories::catalog::collection::CollectionProgress {
                 local_changes: self.vault.snapshot().local_revision != before,
-                continue_traversal: matches!(result, Ok(Ok(true))),
+                continue_traversal: matches!(result, Ok(true)),
             }
         })
     }
