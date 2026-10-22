@@ -13,8 +13,8 @@ catalog-check:
     cargo test --locked --features github-catalog
 
 commit-check:
-    cargo clippy --locked --all-targets --features github-catalog,commit-sync -- -D warnings
-    cargo test --locked --features github-catalog,commit-sync
+    cargo clippy --locked --all-targets --features catalog-runtime,commit-sync -- -D warnings
+    cargo test --locked --features catalog-runtime,commit-sync
 
 github-negative-check:
     cargo test --locked --features github-catalog --test github_provider -- --ignored
