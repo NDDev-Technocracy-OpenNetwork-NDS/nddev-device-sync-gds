@@ -1,4 +1,19 @@
 //! Catalog presentation only. Provider IDs and revisions remain decimal strings.
+#[cfg_attr(
+    all(target_arch = "wasm32", feature = "browser-bindings"),
+    derive(tsify::Tsify, serde::Serialize)
+)]
+#[cfg_attr(
+    all(target_arch = "wasm32", feature = "browser-bindings"),
+    tsify(large_number_types_as_bigints, missing_as_null)
+)]
+pub struct GithubConnectionView {
+    /// Connection is distinct from successful synchronization of commits.
+    pub outcome: String,
+    pub reason: String,
+    pub relative_path: String,
+    pub intent_queued: bool,
+}
 #[derive(Clone)]
 #[cfg_attr(
     all(target_arch = "wasm32", feature = "browser-bindings"),
@@ -199,6 +214,7 @@ pub struct GithubSavedRepositoryGroupView {
     tsify(large_number_types_as_bigints, missing_as_null)
 )]
 pub struct GithubSavedRepositoryPageView {
+    pub local_workspace_supported: bool,
     pub groups: Vec<GithubSavedRepositoryGroupView>,
     pub observed_seq: String,
     pub local_revision: String,
@@ -359,6 +375,7 @@ pub(super) fn project_saved_page(
         }
     }
     GithubSavedRepositoryPageView {
+        local_workspace_supported: super::workspace_supported(),
         observed_seq: observed_seq.to_string(),
         local_revision: local_revision.to_string(),
         has_more,

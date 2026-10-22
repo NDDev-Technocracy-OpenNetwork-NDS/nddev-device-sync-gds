@@ -9,7 +9,7 @@ use nddev_device_sync_application::repositories::commits::{
 use nddev_device_sync_domain::{
     modules::ModuleError,
     repositories::{
-        workspace::{CheckoutLocation, SyncBlock},
+        workspace::{CheckoutBinding, CheckoutLocation, SyncBlock, WorkspacePrincipal},
         *,
     },
 };
@@ -30,9 +30,18 @@ pub struct GitWorkspace {
     io: ProcessIo,
     git: PathBuf,
     root: PathBuf,
+    principal: WorkspacePrincipal,
+    #[cfg(test)]
+    fixture_remote: Option<String>,
 }
 impl GitWorkspace {
-    pub fn new(io: ProcessIo, git: PathBuf, root: PathBuf) -> Result<Self, ModuleError> {
+    pub fn new(
+        io: ProcessIo,
+        git: PathBuf,
+        root: PathBuf,
+        principal: WorkspacePrincipal,
+    ) -> Result<Self, ModuleError> {
+        principal.validate()?;
         if !git.is_absolute() || !root.is_absolute() {
             return Err(ModuleError::InvalidInput);
         }
@@ -40,20 +49,37 @@ impl GitWorkspace {
         if !root.is_dir() || root.join(".git").exists() {
             return Err(ModuleError::InvalidInput);
         }
-        Ok(Self { io, git, root })
+        Ok(Self {
+            io,
+            git,
+            root,
+            principal,
+            #[cfg(test)]
+            fixture_remote: None,
+        })
+    }
+    fn endpoint(&self, location: &CheckoutLocation) -> String {
+        #[cfg(test)]
+        if let Some(endpoint) = &self.fixture_remote {
+            return endpoint.clone();
+        }
+        location.https_url()
     }
 
     /// Only an existing checkout in the authorized owner/repository layout.
     /// `revalidate` checks actual NDS authority, module write consent and the
     /// exact protected credential selection before EACH command and completion.
-    pub async fn synchronize(
+    pub async fn synchronize<F>(
         &self,
         location: &CheckoutLocation,
         archived: bool,
         credential: &str,
         cancellation: &CancellationToken,
-        revalidate: impl AsyncFnMut() -> Result<(), ModuleError>,
-    ) -> Result<CommitOutcome, ModuleError> {
+        mut revalidate: impl FnMut() -> F + Send,
+    ) -> Result<CommitOutcome, ModuleError>
+    where
+        F: std::future::Future<Output = Result<(), ModuleError>> + Send,
+    {
         location.validate()?;
         let checkout = self.root.join(location.owner()).join(location.repository());
         if checkout
@@ -73,56 +99,45 @@ impl GitWorkspace {
         {
             return Err(ModuleError::Unavailable);
         }
-        let binding_path = git_dir.join("nds-binding.json");
-        let metadata = match std::fs::symlink_metadata(&binding_path) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Err(ModuleError::Unavailable);
-            }
-            Err(_) => return Err(ModuleError::Unavailable),
-        };
-        if !metadata.is_file() || metadata.len() > 2_048 {
-            return Err(ModuleError::InvalidResponse);
-        }
-        use std::io::Read;
-        let mut bytes = Vec::new();
-        File::open(binding_path)
-            .map_err(|_| ModuleError::Unavailable)?
-            .take(2_049)
-            .read_to_end(&mut bytes)
-            .map_err(|_| ModuleError::Unavailable)?;
-        if bytes.len() > 2_048 {
-            return Err(ModuleError::InvalidResponse);
-        }
-        let binding: CheckoutLocation =
-            serde_json::from_slice(&bytes).map_err(|_| ModuleError::InvalidResponse)?;
-        binding
-            .validate()
-            .map_err(|_| ModuleError::InvalidResponse)?;
-        if binding != *location {
+        let binding = read_binding(&git_dir)?.ok_or(ModuleError::Unavailable)?;
+        if binding.location != *location || binding.principal != self.principal {
             return Ok(CommitOutcome::Blocked(SyncBlock::WrongRemote));
         }
-        let endpoint = location.https_url();
+        let endpoint = self.endpoint(location);
         self.run(
             checkout,
             endpoint,
             archived,
             credential,
             cancellation,
-            revalidate,
+            move || {
+                let future = revalidate();
+                let git_dir = git_dir.clone();
+                let binding = binding.clone();
+                async move {
+                    future.await?;
+                    if read_binding(&git_dir)?.as_ref() != Some(&binding) {
+                        return Err(ModuleError::Busy);
+                    }
+                    Ok(())
+                }
+            },
         )
         .await
     }
 
-    async fn run(
+    async fn run<F>(
         &self,
         checkout: PathBuf,
         endpoint: String,
         archived: bool,
         credential: &str,
         cancellation: &CancellationToken,
-        mut revalidate: impl AsyncFnMut() -> Result<(), ModuleError>,
-    ) -> Result<CommitOutcome, ModuleError> {
+        mut revalidate: impl FnMut() -> F + Send,
+    ) -> Result<CommitOutcome, ModuleError>
+    where
+        F: std::future::Future<Output = Result<(), ModuleError>> + Send,
+    {
         if credential.is_empty()
             || credential.len() > 8_192
             || !credential.bytes().all(|b| b.is_ascii_graphic())
@@ -167,6 +182,7 @@ impl GitWorkspace {
         lease.try_lock().map_err(|_| ModuleError::Busy)?;
         let cancellation = cancellation.child_token();
         let _cancel_on_drop = cancellation.clone().drop_guard();
+        let location = read_binding(&git_dir)?.map(|binding| binding.location);
         let mut session = Session {
             workspace: self,
             checkout,
@@ -176,8 +192,10 @@ impl GitWorkspace {
             cancellation: cancellation.clone(),
             revalidate,
             git_dir,
+            location,
             _lease: lease,
             fetched: None,
+            deadline,
         };
         let span = nddev_device_sync_telemetry::operation_span("gds", "io")
             .map_err(|_| ModuleError::InvalidContract)?;
@@ -219,6 +237,8 @@ struct Session<'a, G> {
     git_dir: PathBuf,
     _lease: File,
     fetched: Option<String>,
+    location: Option<CheckoutLocation>,
+    deadline: tokio::time::Instant,
 }
 #[derive(PartialEq, Eq)]
 struct Witness {
@@ -230,12 +250,22 @@ struct Witness {
     active_writer: bool,
 }
 
-impl<G: AsyncFnMut() -> Result<(), ModuleError>> Session<'_, G> {
+impl<G, F> Session<'_, G>
+where
+    G: FnMut() -> F + Send,
+    F: std::future::Future<Output = Result<(), ModuleError>> + Send,
+{
     async fn validate(&mut self) -> Result<(), ModuleError> {
+        if tokio::time::Instant::now() >= self.deadline {
+            return Err(ModuleError::Timeout);
+        }
         if self.cancellation.is_cancelled() {
             return Err(ModuleError::Cancelled);
         }
-        (self.revalidate)().await?;
+        tokio::select! { biased;
+            () = self.cancellation.cancelled() => return Err(ModuleError::Cancelled),
+            result = tokio::time::timeout_at(self.deadline, (self.revalidate)()) => result.map_err(|_| ModuleError::Timeout)??,
+        }
         if self.cancellation.is_cancelled() {
             return Err(ModuleError::Cancelled);
         }
@@ -243,8 +273,9 @@ impl<G: AsyncFnMut() -> Result<(), ModuleError>> Session<'_, G> {
     }
     async fn git(&mut self, arguments: &[&str]) -> Result<ProcessOutput, ModuleError> {
         self.validate().await?;
-        let network = matches!(arguments.first(), Some(&"fetch" | &"push"));
+        let network = matches!(arguments.first(), Some(&"fetch" | &"push" | &"clone"));
         let mut argv: Vec<OsString> = [
+            "--no-replace-objects",
             "-c",
             if cfg!(windows) {
                 "core.hooksPath=NUL"
@@ -255,6 +286,8 @@ impl<G: AsyncFnMut() -> Result<(), ModuleError>> Session<'_, G> {
             "core.fsmonitor=false",
             "-c",
             "submodule.recurse=false",
+            "-c",
+            "maintenance.auto=false",
             "-c",
             "credential.helper=",
             "-c",
@@ -291,7 +324,10 @@ impl<G: AsyncFnMut() -> Result<(), ModuleError>> Session<'_, G> {
                     executable: self.workspace.git.clone(),
                     arguments: argv,
                     directory: Some(self.checkout.clone()),
-                    timeout: Duration::from_secs(30),
+                    timeout: self
+                        .deadline
+                        .saturating_duration_since(tokio::time::Instant::now())
+                        .min(Duration::from_secs(30)),
                     max_output_bytes: OUTPUT_BYTES,
                 },
                 network.then(|| self.authorization.clone()),
@@ -327,6 +363,15 @@ impl<G: AsyncFnMut() -> Result<(), ModuleError>> Session<'_, G> {
     async fn safe_configuration(&mut self) -> Result<(), ModuleError> {
         if self.git_dir.join("commondir").exists() {
             return Err(ModuleError::Unavailable);
+        }
+        for name in [
+            "objects/info/alternates",
+            "objects/info/http-alternates",
+            "info/grafts",
+        ] {
+            if std::fs::symlink_metadata(self.git_dir.join(name)).is_ok() {
+                return Err(ModuleError::Unavailable);
+            }
         }
         for name in [
             "config", "objects", "refs", "HEAD", "index", "logs", "hooks",
@@ -467,7 +512,11 @@ impl<G: AsyncFnMut() -> Result<(), ModuleError>> Session<'_, G> {
         self.validate().await
     }
 }
-impl<G: AsyncFnMut() -> Result<(), ModuleError>> SynchronizeCommits for Session<'_, G> {
+impl<G, F> SynchronizeCommits for Session<'_, G>
+where
+    G: FnMut() -> F + Send,
+    F: std::future::Future<Output = Result<(), ModuleError>> + Send,
+{
     type Witness = Witness;
     async fn inspect(&mut self) -> Result<Inspection<Witness>, ModuleError> {
         let witness = self.witness().await?;
@@ -519,7 +568,11 @@ impl<G: AsyncFnMut() -> Result<(), ModuleError>> SynchronizeCommits for Session<
         let upstream_matches = branch
             .as_ref()
             .is_some_and(|b| witness.upstream == format!("refs/remotes/origin/{b}"))
-            && witness.origin == self.endpoint;
+            && (witness.origin == self.endpoint
+                || self
+                    .location
+                    .as_ref()
+                    .is_some_and(|location| location.matches_origin(&witness.origin)));
         let status = LocalGitStatus {
             head_kind: if witness.branch.is_empty() {
                 HeadKind::Detached
@@ -637,6 +690,40 @@ impl<G: AsyncFnMut() -> Result<(), ModuleError>> SynchronizeCommits for Session<
         Ok(())
     }
 }
+
+fn read_binding(git_dir: &std::path::Path) -> Result<Option<CheckoutBinding>, ModuleError> {
+    use std::io::Read;
+    let path = git_dir.join("nds-binding.json");
+    let metadata = match std::fs::symlink_metadata(&path) {
+        Ok(value) => value,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(ModuleError::Unavailable),
+    };
+    if !metadata.is_file() || metadata.len() > 8192 {
+        return Err(ModuleError::InvalidResponse);
+    }
+    let mut bytes = Vec::new();
+    File::open(path)
+        .map_err(|_| ModuleError::Unavailable)?
+        .take(8193)
+        .read_to_end(&mut bytes)
+        .map_err(|_| ModuleError::Unavailable)?;
+    if bytes.len() > 8192 {
+        return Err(ModuleError::InvalidResponse);
+    }
+    let binding: CheckoutBinding =
+        serde_json::from_slice(&bytes).map_err(|_| ModuleError::InvalidResponse)?;
+    binding
+        .validate()
+        .map_err(|_| ModuleError::InvalidResponse)?;
+    Ok(Some(binding))
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[path = "workspace.rs"]
+mod workspace;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub use workspace::ConnectionOutcome;
 fn text(bytes: Vec<u8>) -> Result<String, ModuleError> {
     String::from_utf8(bytes)
         .map(|v| v.trim_end_matches(['\r', '\n']).to_owned())

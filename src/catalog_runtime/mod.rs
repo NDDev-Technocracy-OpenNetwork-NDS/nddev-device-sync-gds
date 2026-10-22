@@ -21,6 +21,13 @@ pub fn required_permissions() -> BTreeSet<Permission> {
     ])
 }
 
+pub fn workspace_supported() -> bool {
+    cfg!(all(
+        feature = "commit-sync",
+        any(target_os = "linux", target_os = "macos")
+    ))
+}
+
 pub(super) type Observations = Arc<Mutex<Option<Observed>>>;
 pub(super) struct Observed {
     pub epoch: (Option<String>, Option<String>),

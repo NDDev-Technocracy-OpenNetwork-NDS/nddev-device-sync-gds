@@ -72,7 +72,7 @@ Raw paths, refs, command output and credentials are not telemetry fields.
 `just commit-check` exercises actual isolated Git publication, fast-forward,
 preservation, checkout locking, cancellation and server-side hook refusal.
 These checks establish local Git behavior; they do not establish positive
-GitHub credentials or Mac/Windows runtime acceptance. Git clone/relocation and activation of automatic commit synchronization remain
+GitHub credentials or Mac/Windows runtime acceptance. Relocation and activation of automatic commit synchronization remain
 separate A08 composition work. The default status-only
 profile and its read-only descriptor remain unchanged.
 
@@ -100,3 +100,25 @@ with an hour pause before a later probe. No credentials or response bodies enter
 that cache or telemetry. `cargo test --features catalog-runtime,commit-sync` also
 checks conditional reads, source isolation and actual transport refusal. These
 controlled HTTP checks do not qualify positive GitHub access.
+
+Explicit checkout connection is available to the shared Rust GUI/CLI client on
+Linux and macOS with `catalog-runtime,commit-sync`. It requires the device's
+separate `git_write` consent. Reading a catalog or enabling process execution
+never implies that grant. The fixed GitHub metadata read confirms repository
+and owner IDs before I/O and again before filesystem publication.
+
+Connections use `~/Developer/nddev/<owner>/<repository>`. An existing checkout
+is adopted only with a matching explicit GitHub origin; SSH aliases are not
+resolved and its origin, index, branches and dirty files remain unchanged.
+A new clone is prepared in owned staging and published with an OS no-replace
+rename. Occupied paths, case collisions, symlinks, active writers and different
+NDS/GitHub identities are refused. Git helpers share the existing bounded
+ProcessIo owner; hooks, external object stores, replacement objects and automatic
+maintenance cannot extend that scope.
+
+Core owns the portable local marker and policy. Vault stores one encrypted
+owner-wide connection intent per repository; device markers stay local rather
+than multiplying replicated entities across 32 devices. A published checkout is
+preserved if NDS registration must be retried. Relocation and periodic commit
+sync activation remain separate A08 steps. Browser/mobile and Windows connection
+are reported unsupported; portable DTOs are not claims of filesystem support.

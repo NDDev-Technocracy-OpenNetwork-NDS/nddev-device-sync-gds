@@ -1,5 +1,8 @@
 //! Actual isolated Git repositories, objects, ref transactions and worktrees.
 //! Local transport does not establish positive GitHub credential acceptance.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[path = "workspace_tests.rs"]
+mod workspace_tests;
 use super::*;
 use nddev_device_sync_adapter_io::NativeIo;
 use nddev_device_sync_domain::repositories::workspace::SyncBlock;
@@ -66,7 +69,7 @@ fn native_cycle_future_is_send_for_the_existing_owned_background_task() {
         false,
         "generated-invalid-token",
         &CancellationToken::new(),
-        async || Ok(()),
+        || async { Ok(()) },
     ));
 }
 impl Fixture {
@@ -103,9 +106,18 @@ impl Fixture {
             .map(|p| p.join(if cfg!(windows) { "git.exe" } else { "git" }))
             .find(|p| p.is_file())
             .unwrap();
-        let workspace =
-            GitWorkspace::new(NativeIo::new(4).unwrap().process_handle(), executable, root)
-                .unwrap();
+        let workspace = GitWorkspace::new(
+            NativeIo::new(4).unwrap().process_handle(),
+            executable,
+            root,
+            WorkspacePrincipal {
+                origin: "https://nds.example.invalid".into(),
+                tenant: "company".into(),
+                user: "owner".into(),
+                device: "device".into(),
+            },
+        )
+        .unwrap();
         Self {
             _directory: directory,
             remote,
@@ -123,7 +135,7 @@ impl Fixture {
                 false,
                 "generated-invalid-token",
                 &CancellationToken::new(),
-                async || Ok(()),
+                || async { Ok(()) },
             )
             .await
     }
@@ -196,7 +208,7 @@ async fn acknowledged_push_accepts_a_tracking_ref_already_advanced_by_git() {
             false,
             "generated-invalid-token",
             &CancellationToken::new(),
-            async || {
+            || async {
                 // A real separate Git ref writer at the publication boundary. Git2.56
                 // also performs this tracking update itself; older Git can leave it old.
                 if fixture.remote_head() == local && counted.fetch_add(1, Ordering::SeqCst) == 0 {
@@ -235,7 +247,7 @@ async fn publication_cannot_overwrite_an_unrelated_tracking_ref_change() {
             false,
             "generated-invalid-token",
             &CancellationToken::new(),
-            async || {
+            || async {
                 if fixture.remote_head() == local && count.fetch_add(1, Ordering::SeqCst) == 0 {
                     git(
                         &fixture.first,
@@ -273,7 +285,7 @@ async fn archived_checkout_fetches_and_fast_forwards_but_cannot_publish() {
                 true,
                 "generated-invalid-token",
                 &CancellationToken::new(),
-                async || Ok(()),
+                || async { Ok(()) },
             )
             .await
     };
@@ -369,11 +381,14 @@ async fn real_checkout_lease_and_cancellation_cannot_start_a_second_writer() {
                 false,
                 "generated-invalid-token",
                 &CancellationToken::new(),
-                async move || {
-                    if counted.fetch_add(1, Ordering::SeqCst) >= 3 {
-                        Err(ModuleError::Cancelled)
-                    } else {
-                        Ok(())
+                move || {
+                    let counted = counted.clone();
+                    async move {
+                        if counted.fetch_add(1, Ordering::SeqCst) >= 3 {
+                            Err(ModuleError::Cancelled)
+                        } else {
+                            Ok(())
+                        }
                     }
                 }
             )
@@ -495,7 +510,7 @@ async fn public_workspace_checks_owner_layout_and_exact_remote_before_network() 
                 false,
                 "generated-invalid-token",
                 &CancellationToken::new(),
-                async || Ok(())
+                || async { Ok(()) }
             )
             .await
             .unwrap_err(),
@@ -503,7 +518,12 @@ async fn public_workspace_checks_owner_layout_and_exact_remote_before_network() 
     );
     std::fs::write(
         fixture.first.join(".git/nds-binding.json"),
-        serde_json::to_vec(&location).unwrap(),
+        serde_json::to_vec(&CheckoutBinding {
+            id: "10000000-0000-4000-8000-000000000001".into(),
+            principal: fixture.workspace.principal.clone(),
+            location: location.clone(),
+        })
+        .unwrap(),
     )
     .unwrap();
     // This actual checkout has an isolated local origin; an NDS GitHub binding
@@ -516,7 +536,7 @@ async fn public_workspace_checks_owner_layout_and_exact_remote_before_network() 
                 false,
                 "generated-invalid-token",
                 &CancellationToken::new(),
-                async || Ok(())
+                || async { Ok(()) }
             )
             .await
             .unwrap(),
@@ -534,7 +554,7 @@ async fn public_workspace_checks_owner_layout_and_exact_remote_before_network() 
                 false,
                 "generated-invalid-token",
                 &CancellationToken::new(),
-                async || Ok(())
+                || async { Ok(()) }
             )
             .await
             .unwrap(),
@@ -559,7 +579,7 @@ async fn public_workspace_checks_owner_layout_and_exact_remote_before_network() 
                     false,
                     "generated-invalid-token",
                     &CancellationToken::new(),
-                    async || Ok(())
+                    || async { Ok(()) }
                 )
                 .await
                 .unwrap_err(),
