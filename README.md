@@ -122,3 +122,5 @@ than multiplying replicated entities across 32 devices. A published checkout is
 preserved if NDS registration must be retried. Relocation and periodic commit
 sync activation remain separate A08 steps. Browser/mobile and Windows connection
 are reported unsupported; portable DTOs are not claims of filesystem support.
+
+Release journals live in [GitHub Releases](https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-gds/releases).
