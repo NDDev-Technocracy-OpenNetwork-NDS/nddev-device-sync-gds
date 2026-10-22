@@ -1,6 +1,8 @@
 //! Bounded Rust replacement of the local Git status provider.
 //! Core owns classification; shared Agent IO owns worker lifetime.
 
+#[cfg(feature = "catalog-runtime")]
+pub mod catalog_runtime;
 #[cfg(feature = "github-catalog")]
 pub mod github;
 pub mod view;
