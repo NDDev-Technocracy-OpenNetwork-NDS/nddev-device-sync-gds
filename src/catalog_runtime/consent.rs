@@ -1,4 +1,4 @@
-use super::{required_permissions, view::GithubCatalogError};
+use super::view::GithubCatalogError;
 use nddev_device_sync_accounts::{IdentityClient, LocalUseFence};
 use nddev_device_sync_domain::modules::{ModuleError, ModuleObservation, control::Readiness};
 use nddev_device_sync_vault::VaultClient;
@@ -13,6 +13,7 @@ pub(super) struct ModuleUseGuard {
     pub lifetime: Arc<CancellationToken>,
     observation: super::Observations,
     source: String,
+    required: std::collections::BTreeSet<nddev_device_sync_domain::Permission>,
 }
 impl ModuleUseGuard {
     pub async fn capture(
@@ -20,10 +21,11 @@ impl ModuleUseGuard {
         vault: Arc<VaultClient>,
         observation: super::Observations,
         source: String,
+        required: std::collections::BTreeSet<nddev_device_sync_domain::Permission>,
     ) -> Result<Self, GithubCatalogError> {
         let fence = identity.local_use_fence().await?;
         let setting = vault.module_configuration("gds").await?;
-        admit(&setting)?;
+        admit(&setting, &required)?;
         let guard = Self {
             identity,
             vault,
@@ -32,6 +34,7 @@ impl ModuleUseGuard {
             lifetime: Arc::new(CancellationToken::new()),
             observation,
             source,
+            required,
         };
         guard.validate().await?;
         Ok(guard)
@@ -42,7 +45,7 @@ impl ModuleUseGuard {
         }
         self.identity.validate_local_use(&self.fence).await?;
         let setting = self.vault.module_configuration("gds").await?;
-        admit(&setting)?;
+        admit(&setting, &self.required)?;
         if setting.operation_id != self.operation {
             self.lifetime.cancel();
             return Err(GithubCatalogError::Cancelled);
@@ -90,13 +93,16 @@ impl ModuleUseGuard {
             .observe(result, crate::github::now_ms().ok());
     }
 }
-fn admit(setting: &nddev_device_sync_vault::ModuleSetting) -> Result<(), GithubCatalogError> {
+fn admit(
+    setting: &nddev_device_sync_vault::ModuleSetting,
+    required: &std::collections::BTreeSet<nddev_device_sync_domain::Permission>,
+) -> Result<(), GithubCatalogError> {
     if setting.conflicted {
         return Err(GithubCatalogError::ModuleConfigurationConflict);
     }
     setting
         .configuration
-        .admit(true, true, &required_permissions())
+        .admit(true, true, required)
         .map_err(|reason| match reason {
             Readiness::Disabled => GithubCatalogError::ModuleDisabled,
             Readiness::PermissionRequired => GithubCatalogError::ModulePermissionRequired,

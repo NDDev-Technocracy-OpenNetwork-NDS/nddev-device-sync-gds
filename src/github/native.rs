@@ -37,7 +37,7 @@ impl Client {
     pub(super) async fn get(
         &self,
         credential: &str,
-        route: Route,
+        route: Route<'_>,
         etag: Option<&str>,
     ) -> Result<Reply, ModuleError> {
         self.limits
