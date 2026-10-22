@@ -24,6 +24,11 @@ jobs:
           persist-credentials: false
       - name: Install pinned Rust
         run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy
+      - name: Install Linux credential-store build inputs
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends libsecret-1-dev pkg-config
       - name: Format
         run: cargo fmt --all -- --check
       - name: Lint
