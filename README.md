@@ -72,7 +72,7 @@ Raw paths, refs, command output and credentials are not telemetry fields.
 `just commit-check` exercises actual isolated Git publication, fast-forward,
 preservation, checkout locking, cancellation and server-side hook refusal.
 These checks establish local Git behavior; they do not establish positive
-GitHub credentials or Mac/Windows runtime acceptance. Git clone/relocation and activation of automatic commit synchronization remain
+GitHub credentials or Mac/Windows runtime acceptance. Relocation and activation of automatic commit synchronization remain
 separate A08 composition work. The default status-only
 profile and its read-only descriptor remain unchanged.
 
@@ -118,7 +118,7 @@ maintenance cannot extend that scope.
 
 Core owns the portable local marker and policy. Vault stores one encrypted
 owner-wide connection intent per repository; device markers stay local rather
-than multiplying replicated entities across32 devices. A published checkout is
+than multiplying replicated entities across 32 devices. A published checkout is
 preserved if NDS registration must be retried. Relocation and periodic commit
 sync activation remain separate A08 steps. Browser/mobile and Windows connection
 are reported unsupported; portable DTOs are not claims of filesystem support.
