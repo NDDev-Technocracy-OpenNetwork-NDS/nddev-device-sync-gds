@@ -19,6 +19,8 @@ use tokio_util::sync::CancellationToken;
 #[path = "reconciliation.rs"]
 mod reconciliation;
 use reconciliation::{ResolutionBatch, ScopeResolution};
+#[path = "connection.rs"]
+mod connection;
 
 /// One caller lifetime over the canonical Core/Vault catalog pipeline.
 /// Runtime composition supplies independent foreground/background sessions and
@@ -79,14 +81,64 @@ impl CatalogClient {
             self.invalidate_catalog();
         }
     }
-    async fn module_access(&self, source: &str) -> Result<ModuleUseGuard, GithubCatalogError> {
-        ModuleUseGuard::capture(
-            self.identity.clone(),
-            self.vault.clone(),
-            self.observation.clone(),
-            source.to_owned(),
-        )
-        .await
+    async fn capture_use(
+        &self,
+        flight: &Flight<'_>,
+        source: &str,
+        required: std::collections::BTreeSet<nddev_device_sync_domain::Permission>,
+        caller_fence: Arc<LocalUseFence>,
+        prior: Option<Arc<LocalUseFence>>,
+    ) -> Result<CatalogUseGuard, GithubCatalogError> {
+        let module = Arc::new(
+            ModuleUseGuard::capture(
+                self.identity.clone(),
+                self.vault.clone(),
+                self.observation.clone(),
+                source.to_owned(),
+                required.clone(),
+            )
+            .await?,
+        );
+        let fence = match prior {
+            Some(fence) => fence,
+            None => Arc::new(self.identity.local_use_fence_from(&self.authority).await?),
+        };
+        flight.check()?;
+        let cancellation = Arc::new(flight.lifetime.child_token());
+        let mut captured = self
+            .vault
+            .capture_configured_repository_observations(
+                &required,
+                source,
+                fence.clone(),
+                cancellation.as_ref().clone(),
+            )
+            .await
+            .map_err(|error| {
+                if matches!(
+                    error,
+                    nddev_device_sync_vault::Error::SelectionChanged
+                        | nddev_device_sync_vault::Error::Locked
+                ) {
+                    module.invalidate_observation();
+                }
+                GithubCatalogError::from(error)
+            })?;
+        self.vault
+            .bind_repository_caller(&mut captured, self.caller.clone(), caller_fence)
+            .await?;
+        flight.check()?;
+        let read = Arc::new(captured);
+        Ok(CatalogUseGuard {
+            module,
+            identity: self.identity.clone(),
+            vault: self.vault.clone(),
+            selection: read.selection().clone(),
+            read,
+            fence,
+            cancellation,
+            lifetime: flight.lifetime.clone(),
+        })
     }
 }
 
@@ -264,25 +316,22 @@ fn revalidation(
             Ok(()) => Ok(()),
             Err(error) => {
                 *errors.lock().unwrap_or_else(|e| e.into_inner()) = Some(error);
-                use nddev_device_sync_domain::modules::ModuleError as E;
-                Err(match error {
-                    GithubCatalogError::Cancelled => E::Cancelled,
-                    GithubCatalogError::Busy => E::Busy,
-                    GithubCatalogError::Timeout => E::Timeout,
-                    GithubCatalogError::InvalidInput => E::InvalidInput,
-                    GithubCatalogError::InvalidResponse => E::InvalidResponse,
-                    GithubCatalogError::ProviderFailed => E::ProviderFailed,
-                    GithubCatalogError::AuthorizationRequired
-                    | GithubCatalogError::CredentialChanged
-                    | GithubCatalogError::CapacityExhausted
-                    | GithubCatalogError::Unavailable
-                    | GithubCatalogError::ModuleDisabled
-                    | GithubCatalogError::ModulePermissionRequired
-                    | GithubCatalogError::ModuleConfigurationConflict => E::Unavailable,
-                })
+                Err(module_error(error))
             }
         }
     })
+}
+fn module_error(error: GithubCatalogError) -> nddev_device_sync_domain::modules::ModuleError {
+    use nddev_device_sync_domain::modules::ModuleError as E;
+    match error {
+        GithubCatalogError::Cancelled => E::Cancelled,
+        GithubCatalogError::Busy => E::Busy,
+        GithubCatalogError::Timeout => E::Timeout,
+        GithubCatalogError::InvalidInput => E::InvalidInput,
+        GithubCatalogError::InvalidResponse => E::InvalidResponse,
+        GithubCatalogError::ProviderFailed => E::ProviderFailed,
+        _ => E::Unavailable,
+    }
 }
 struct CatalogPort {
     cache: Arc<crate::github::CatalogCache>,
@@ -517,48 +566,22 @@ impl CatalogClient {
                 )
             }
         };
-        let module = Arc::new(self.module_access(&source_operation).await?);
-        let fence = match prior_fence {
-            Some(fence) => fence,
-            None => Arc::new(
-                self.shared_identity()
-                    .local_use_fence_from(&self.authority)
-                    .await?,
-            ),
-        };
-        flight.check()?;
-        let vault = self.vault.clone();
-        let cancellation = Arc::new(flight.lifetime.child_token());
-        // The page survives a bounded caller wait, but never a selection/session
-        // cancellation. Capture this original lifetime before provider I/O.
-        let mut captured = vault
-            .capture_configured_repository_observations(
-                &super::required_permissions(),
+        let guard = self
+            .capture_use(
+                flight,
                 &source_operation,
-                fence.clone(),
-                cancellation.as_ref().clone(),
+                super::required_permissions(),
+                caller_fence.clone(),
+                prior_fence,
             )
-            .await
-            .map_err(|error| {
-                if matches!(
-                    error,
-                    nddev_device_sync_vault::Error::SelectionChanged
-                        | nddev_device_sync_vault::Error::Locked
-                ) {
-                    module.invalidate_observation();
-                }
-                GithubCatalogError::from(error)
-            })?;
-        vault
-            .bind_repository_caller(&mut captured, self.caller.clone(), caller_fence.clone())
             .await?;
-        let read = Arc::new(captured);
-        flight.check()?;
+        let read = guard.read.clone();
+        let fence = guard.fence.clone();
         if read.selection() != &selection {
             return Err(GithubCatalogError::CredentialChanged);
         }
         if read.writer_mode() != Some(nddev_device_sync_application::replica::WriterMode::V3) {
-            module.invalidate_observation();
+            guard.module.invalidate_observation();
             return Err(GithubCatalogError::Unavailable);
         }
         let port = CatalogPort {
@@ -566,16 +589,7 @@ impl CatalogClient {
             source_operation,
             caller: self.caller.clone(),
             caller_fence,
-            guard: CatalogUseGuard {
-                module,
-                identity: self.shared_identity().clone(),
-                vault,
-                selection: selection.clone(),
-                read: read.clone(),
-                fence: fence.clone(),
-                cancellation,
-                lifetime: flight.lifetime.clone(),
-            },
+            guard,
             read,
         };
         let mut page = catalog::observations::observation_page(

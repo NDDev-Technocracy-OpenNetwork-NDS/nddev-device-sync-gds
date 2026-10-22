@@ -1,5 +1,6 @@
 //! Fixed authenticated GitHub read adapter. The protected Vault credential owner
 //! lends a token only for this future; it never enters a DTO or a core request.
+use nddev_device_sync_domain::repositories::workspace::CheckoutLocation;
 use nddev_device_sync_domain::{
     modules::{ModuleError, query_outcome},
     repositories::catalog::*,
@@ -65,6 +66,57 @@ pub async fn read_user_and_page(
     mut revalidate: impl AsyncFnMut() -> Result<(), ModuleError>,
 ) -> Result<ProviderRepositoryPage, ModuleError> {
     observed(credential, request, cancellation, &mut revalidate, None).await
+}
+
+/// A saved locator is not proof of its current GitHub identity. Connection
+/// obtains uncached metadata at the fixed origin and checks both stable IDs;
+/// renamed/transferred/reused paths cannot silently bind another repository.
+pub async fn read_repository(
+    credential: &str,
+    location: &CheckoutLocation,
+    cancellation: &CancellationToken,
+    mut revalidate: impl AsyncFnMut() -> Result<(), ModuleError>,
+) -> Result<RepositorySummary, ModuleError> {
+    location.validate()?;
+    if credential.is_empty()
+        || credential.len() > 8192
+        || !credential.bytes().all(|byte| byte.is_ascii_graphic())
+    {
+        return Err(ModuleError::InvalidInput);
+    }
+    within_deadline(cancellation, async {
+        let client = shared_client()?;
+        let _admission = client
+            .admission
+            .try_acquire()
+            .map_err(|_| ModuleError::Busy)?;
+        revalidate().await?;
+        let reply = client
+            .get(credential, Route::Repository(location), None)
+            .await?;
+        if reply.unchanged {
+            return Err(ModuleError::InvalidResponse);
+        }
+        let repository = verified_repository(&reply.body, location)?;
+        revalidate().await?;
+        Ok(repository)
+    })
+    .await
+}
+
+fn verified_repository(
+    body: &[u8],
+    expected: &CheckoutLocation,
+) -> Result<RepositorySummary, ModuleError> {
+    let repository = serde_json::from_slice::<RepositoryWire>(body)
+        .map_err(|_| ModuleError::InvalidResponse)?
+        .decode()?;
+    repository.owner.validate()?;
+    observations::RepositoryFact::from_summary(&repository)?;
+    if CheckoutLocation::from_repository(&repository)? != *expected {
+        return Err(ModuleError::InvalidResponse);
+    }
+    Ok(repository)
 }
 async fn observed(
     credential: &str,
@@ -176,6 +228,13 @@ async fn bounded_cached_client(
             .admit(now_ms()?)?;
         read(client, credential, request, revalidate, cache).await
     };
+    within_deadline(cancellation, work).await
+}
+
+async fn within_deadline<T>(
+    cancellation: &CancellationToken,
+    work: impl std::future::Future<Output = Result<T, ModuleError>>,
+) -> Result<T, ModuleError> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         tokio::select! { biased;
@@ -223,17 +282,21 @@ async fn read(
 }
 
 #[derive(Clone, Copy)]
-enum Route {
+enum Route<'a> {
     User,
     Repositories(u8),
+    Repository(&'a CheckoutLocation),
 }
-impl Route {
+impl Route<'_> {
     fn path(&self) -> String {
         match self {
             Self::User => "/user".into(),
             Self::Repositories(page) => format!(
                 "/user/repos?affiliation=owner,organization_member&visibility=all&sort=full_name&per_page={REPOSITORIES_PER_PAGE}&page={page}"
             ),
+            Self::Repository(location) => {
+                format!("/repos/{}/{}", location.owner(), location.repository())
+            }
         }
     }
 }
@@ -389,6 +452,35 @@ pub(crate) fn now_ms() -> Result<u64, ModuleError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn repository_confirmation_rejects_reused_name_wrong_owner_and_changed_locator() {
+        let original = serde_json::json!({"id":8,"owner":{"id":3,"login":"org","type":"Organization"},"name":"repo","full_name":"org/repo","visibility":"private","archived":false,"default_branch":"main"});
+        let repository = serde_json::from_value::<RepositoryWire>(original.clone())
+            .unwrap()
+            .decode()
+            .unwrap();
+        let expected = CheckoutLocation::from_repository(&repository).unwrap();
+        assert_eq!(
+            verified_repository(&serde_json::to_vec(&original).unwrap(), &expected)
+                .unwrap()
+                .id
+                .value(),
+            8
+        );
+        for (pointer, value) in [
+            ("/id", serde_json::json!(9)),
+            ("/owner/id", serde_json::json!(4)),
+            ("/name", serde_json::json!("renamed")),
+            ("/owner/login", serde_json::json!("other-org")),
+        ] {
+            let mut changed = original.clone();
+            *changed.pointer_mut(pointer).unwrap() = value;
+            assert!(matches!(
+                verified_repository(&serde_json::to_vec(&changed).unwrap(), &expected),
+                Err(ModuleError::InvalidResponse)
+            ));
+        }
+    }
     #[test]
     fn deterministic_decode_and_link_checks_are_not_provider_acceptance() {
         let json = br#"{"id":8,"owner":{"id":3,"login":"org","type":"Organization"},"name":"repo","full_name":"org/repo","visibility":"private","archived":false,"default_branch":"main"}"#;
