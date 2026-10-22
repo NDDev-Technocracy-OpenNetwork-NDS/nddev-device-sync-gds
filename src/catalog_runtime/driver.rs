@@ -1,4 +1,4 @@
-//! NdsClient owns one catalog flight and a bounded page awaiting durable receipts.
+//! CatalogClient retains one flight and a bounded page awaiting durable receipts.
 //! Core owns page progress; Vault owns encrypted state. No LocalAgent dependency.
 use super::{consent::ModuleUseGuard, view::*};
 use catalog::observations::{PagePublication, ReadObservationBaselines, Traversal};
@@ -26,10 +26,11 @@ use reconciliation::{ResolutionBatch, ScopeResolution};
 pub struct CatalogClient {
     catalog: Mutex<CatalogState>,
     identity: Arc<IdentityClient>,
+    authority: Arc<nddev_device_sync_accounts::LocalUseLifetime>,
     caller: Arc<IdentityClient>,
     vault: Arc<VaultClient>,
     active: std::sync::atomic::AtomicBool,
-    observation: Arc<Mutex<Option<nddev_device_sync_domain::modules::ModuleObservation>>>,
+    observation: super::Observations,
     admission: Arc<tokio::sync::Semaphore>,
     cache: Arc<crate::github::CatalogCache>,
 }
@@ -46,15 +47,17 @@ impl CatalogClient {
     }
     pub(super) fn new(
         identity: Arc<IdentityClient>,
+        authority: Arc<nddev_device_sync_accounts::LocalUseLifetime>,
         caller: Arc<IdentityClient>,
         vault: Arc<VaultClient>,
-        observation: Arc<Mutex<Option<nddev_device_sync_domain::modules::ModuleObservation>>>,
+        observation: super::Observations,
         admission: Arc<tokio::sync::Semaphore>,
         cache: Arc<crate::github::CatalogCache>,
     ) -> Self {
         Self {
             catalog: Mutex::default(),
             identity,
+            authority,
             caller,
             vault,
             active: std::sync::atomic::AtomicBool::new(true),
@@ -76,11 +79,12 @@ impl CatalogClient {
             self.invalidate_catalog();
         }
     }
-    async fn module_access(&self) -> Result<ModuleUseGuard, GithubCatalogError> {
+    async fn module_access(&self, source: &str) -> Result<ModuleUseGuard, GithubCatalogError> {
         ModuleUseGuard::capture(
             self.identity.clone(),
             self.vault.clone(),
             self.observation.clone(),
+            source.to_owned(),
         )
         .await
     }
@@ -365,7 +369,13 @@ impl ReadGithubCatalogPage for CatalogPort {
             move || revalidation(callback_guard.clone(), callback_error.clone()),
         )
         .await;
-        self.guard.module.observe(&result);
+        if guard_error
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .is_none()
+        {
+            self.guard.module.observe(&result);
+        }
         result.map_err(|error| {
             guard_error
                 .lock()
@@ -398,6 +408,8 @@ pub fn caller_error(error: &GithubCatalogError) -> (String, &'static str, bool) 
 
 impl CatalogClient {
     fn catalog_flight(&self) -> Result<Flight<'_>, GithubCatalogError> {
+        self.identity
+            .check_captured_local_use_lifetime(&self.authority)?;
         if !self.catalog_active() {
             return Err(GithubCatalogError::Cancelled);
         }
@@ -505,10 +517,14 @@ impl CatalogClient {
                 )
             }
         };
-        let module = Arc::new(self.module_access().await?);
+        let module = Arc::new(self.module_access(&source_operation).await?);
         let fence = match prior_fence {
             Some(fence) => fence,
-            None => Arc::new(self.shared_identity().local_use_fence().await?),
+            None => Arc::new(
+                self.shared_identity()
+                    .local_use_fence_from(&self.authority)
+                    .await?,
+            ),
         };
         flight.check()?;
         let vault = self.vault.clone();
@@ -522,7 +538,17 @@ impl CatalogClient {
                 fence.clone(),
                 cancellation.as_ref().clone(),
             )
-            .await?;
+            .await
+            .map_err(|error| {
+                if matches!(
+                    error,
+                    nddev_device_sync_vault::Error::SelectionChanged
+                        | nddev_device_sync_vault::Error::Locked
+                ) {
+                    module.invalidate_observation();
+                }
+                GithubCatalogError::from(error)
+            })?;
         vault
             .bind_repository_caller(&mut captured, self.caller.clone(), caller_fence.clone())
             .await?;
@@ -532,6 +558,7 @@ impl CatalogClient {
             return Err(GithubCatalogError::CredentialChanged);
         }
         if read.writer_mode() != Some(nddev_device_sync_application::replica::WriterMode::V3) {
+            module.invalidate_observation();
             return Err(GithubCatalogError::Unavailable);
         }
         let port = CatalogPort {
@@ -843,8 +870,10 @@ impl CatalogClient {
                     result = async {
                         let fence = self.caller.local_use_fence().await?;
                         flight.check()?;
+                        self.identity.check_captured_local_use_lifetime(&self.authority)?;
                         let page = self.vault.records(after).await?;
                         self.caller.validate_local_use(&fence).await?;
+                        self.identity.check_captured_local_use_lifetime(&self.authority)?;
                         flight.check()?;
                         Ok(GithubCredentialReferencePage {
                             items: page.items.into_iter().filter(|r| !r.deleted && !r.conflicted).map(|r| GithubCredentialReference {
@@ -886,7 +915,7 @@ impl CatalogClient {
                     result = async {
                         let fence = match prior_fence {
                             Some(fence) => fence,
-                            None => Arc::new(self.shared_identity().local_use_fence().await?),
+                            None => Arc::new(self.shared_identity().local_use_fence_from(&self.authority).await?),
                         };
                         self.shared_identity().validate_local_use(&fence).await?;
                         flight.check()?;
@@ -970,6 +999,14 @@ impl CatalogClient {
                 .await
                 .map_err(|_| GithubCatalogError::Timeout)?;
                 flight.check()?;
+                if matches!(result, Err(GithubCatalogError::CredentialChanged | GithubCatalogError::AuthorizationRequired)) {
+                    let mut state = self.catalog.lock().unwrap_or_else(|error| error.into_inner());
+                    if matches!(result, Err(GithubCatalogError::CredentialChanged))
+                        && let Some(page) = &state.pending {
+                        page.port.guard.module.invalidate_observation();
+                    }
+                    state.invalidate(false);
+                }
                 result
             },
             GithubCatalogError::Unavailable,

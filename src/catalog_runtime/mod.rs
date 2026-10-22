@@ -21,14 +21,21 @@ pub fn required_permissions() -> BTreeSet<Permission> {
     ])
 }
 
+pub(super) type Observations = Arc<Mutex<Option<Observed>>>;
+pub(super) struct Observed {
+    pub epoch: (Option<String>, Option<String>),
+    pub value: ModuleObservation,
+}
+
 /// One provider admission and observation, with separate bounded cursor
 /// lifetimes for presentation and the retained replica collector.
 pub struct CatalogRuntime {
     identity: Arc<IdentityClient>,
+    authority: Arc<nddev_device_sync_accounts::LocalUseLifetime>,
     admission: Arc<tokio::sync::Semaphore>,
     cache: Arc<crate::github::CatalogCache>,
     background: Arc<CatalogClient>,
-    observation: Arc<Mutex<Option<ModuleObservation>>>,
+    observation: Observations,
     vault: Arc<VaultClient>,
     work: Mutex<WorkSchedule>,
 }
@@ -38,14 +45,17 @@ struct WorkSchedule {
 }
 impl CatalogRuntime {
     pub fn new(identity: Arc<IdentityClient>, vault: Arc<VaultClient>) -> Self {
+        let authority = Arc::new(identity.local_use_lifetime());
         let observation = Arc::new(Mutex::new(None));
         let admission = Arc::new(tokio::sync::Semaphore::new(1));
         let cache = Arc::new(crate::github::CatalogCache::default());
         Self {
             identity: identity.clone(),
+            authority: authority.clone(),
             admission: admission.clone(),
             background: Arc::new(CatalogClient::new(
                 identity.clone(),
+                authority,
                 identity,
                 vault.clone(),
                 observation.clone(),
@@ -64,6 +74,7 @@ impl CatalogRuntime {
     pub fn foreground(&self, caller: Arc<IdentityClient>) -> Arc<CatalogClient> {
         Arc::new(CatalogClient::new(
             self.identity.clone(),
+            self.authority.clone(),
             caller,
             self.vault.clone(),
             self.observation.clone(),
@@ -74,15 +85,33 @@ impl CatalogRuntime {
     pub fn cancel(&self) {
         self.background.cancel_github_catalog();
     }
-    pub fn observation(&self) -> Option<ModuleObservation> {
+    /// Health belongs to the exact source and consent that were actually read.
+    /// A new selection/configuration cannot inherit another probe's readiness.
+    pub async fn observation(&self) -> Option<ModuleObservation> {
+        self.identity
+            .check_captured_local_use_lifetime(&self.authority)
+            .ok()?;
+        let source = self.vault.github_source().await.ok()?;
+        let consent = self.vault.module_configuration("gds").await.ok()?;
+        self.identity
+            .check_captured_local_use_lifetime(&self.authority)
+            .ok()?;
+        if source.conflicted || source.selection.is_none() || consent.conflicted {
+            return None;
+        }
+        let epoch = (source.operation_id, consent.operation_id);
         self.observation
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .clone()
+            .as_ref()
+            .filter(|observation| observation.epoch == epoch)
+            .map(|observation| observation.value.clone())
     }
     async fn collect_page(&self) -> Result<bool, view::GithubCatalogError> {
         use nddev_device_sync_accounts::runtime::Instant;
         use std::time::Duration;
+        self.identity
+            .check_captured_local_use_lifetime(&self.authority)?;
         let source = self.vault.github_source().await?;
         let consent = self.vault.module_configuration("gds").await?;
         let epoch = (source.operation_id, consent.operation_id);
@@ -90,17 +119,20 @@ impl CatalogRuntime {
             let mut work = self.work.lock().unwrap_or_else(|error| error.into_inner());
             let changed = work.epoch.as_ref() != Some(&epoch);
             if changed {
-                work.epoch = Some(epoch);
+                work.epoch = Some(epoch.clone());
                 work.next = Some(Instant::now());
             }
             changed
         };
         if changed {
             self.cancel();
-            *self
+            let mut observed = self
                 .observation
                 .lock()
-                .unwrap_or_else(|error| error.into_inner()) = None;
+                .unwrap_or_else(|error| error.into_inner());
+            if observed.as_ref().is_some_and(|value| value.epoch != epoch) {
+                *observed = None;
+            }
         }
         if source.conflicted
             || source.selection.is_none()

@@ -88,6 +88,8 @@ consent and the saved owner-wide GitHub source. Every provider read and encrypte
 publication rechecks that original source, consent and credential. A stale GUI
 caller cannot borrow the retained owner's authorization. Catalog failures have
 their own observation and never masquerade as a Vault replication failure.
+Health is projected for its observed source and consent; each retained resource
+keeps its original owner authority lifetime.
 
 Complete traversals are checked every five minutes. Bounded parsed metadata and
 ETags are retained only in memory for one immutable source, with authorization

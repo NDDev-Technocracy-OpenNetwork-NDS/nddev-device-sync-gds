@@ -1,4 +1,4 @@
-//! Fixed authenticated GitHub read adapter. The NdsClient credential owner
+//! Fixed authenticated GitHub read adapter. The protected Vault credential owner
 //! lends a token only for this future; it never enters a DTO or a core request.
 use nddev_device_sync_domain::{
     modules::{ModuleError, query_outcome},
@@ -253,7 +253,11 @@ fn status(
         module = "gds",
         scope = "io",
         status,
-        outcome = if status == 200 { "ok" } else { "rejected" }
+        outcome = if matches!(status, 200 | 304) {
+            "ok"
+        } else {
+            "rejected"
+        }
     );
     match status {
         200 | 304 => Ok(()),

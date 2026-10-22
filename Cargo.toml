@@ -17,7 +17,7 @@ github-catalog = ["dep:zeroize", "dep:tokio", "dep:tokio-util", "dep:tracing", "
 
 [dependencies]
 nddev-device-sync-accounts = { git = "https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-accounts", rev = "59ab75074adfb7c434e994fbaecf8769ac43f5de", optional = true }
-nddev-device-sync-vault = { git = "https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-vault", rev = "dad0d0b55c635a4f8a8ddc49761d99b71e8f514e", optional = true }
+nddev-device-sync-vault = { git = "https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-vault", rev = "746e8a166be9ac2f5b956a5a0cc12df6d541c38f", optional = true }
 uuid = { version = "1.27", features = ["v4"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

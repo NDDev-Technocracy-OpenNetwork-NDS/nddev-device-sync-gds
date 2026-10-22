@@ -2,7 +2,7 @@ use super::{required_permissions, view::GithubCatalogError};
 use nddev_device_sync_accounts::{IdentityClient, LocalUseFence};
 use nddev_device_sync_domain::modules::{ModuleError, ModuleObservation, control::Readiness};
 use nddev_device_sync_vault::VaultClient;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 pub(super) struct ModuleUseGuard {
@@ -11,13 +11,15 @@ pub(super) struct ModuleUseGuard {
     operation: Option<String>,
     fence: LocalUseFence,
     pub lifetime: Arc<CancellationToken>,
-    observation: Arc<Mutex<Option<ModuleObservation>>>,
+    observation: super::Observations,
+    source: String,
 }
 impl ModuleUseGuard {
     pub async fn capture(
         identity: Arc<IdentityClient>,
         vault: Arc<VaultClient>,
-        observation: Arc<Mutex<Option<ModuleObservation>>>,
+        observation: super::Observations,
+        source: String,
     ) -> Result<Self, GithubCatalogError> {
         let fence = identity.local_use_fence().await?;
         let setting = vault.module_configuration("gds").await?;
@@ -29,6 +31,7 @@ impl ModuleUseGuard {
             fence,
             lifetime: Arc::new(CancellationToken::new()),
             observation,
+            source,
         };
         guard.validate().await?;
         Ok(guard)
@@ -47,6 +50,18 @@ impl ModuleUseGuard {
         self.identity.validate_local_use(&self.fence).await?;
         Ok(())
     }
+    pub fn invalidate_observation(&self) {
+        let mut slot = self
+            .observation
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if slot
+            .as_ref()
+            .is_some_and(|value| value.epoch == (Some(self.source.clone()), self.operation.clone()))
+        {
+            *slot = None;
+        }
+    }
     pub fn observe<T>(&self, result: &Result<T, ModuleError>) {
         if self.lifetime.is_cancelled() {
             return;
@@ -55,15 +70,24 @@ impl ModuleUseGuard {
             .observation
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let observation = slot.get_or_insert_with(|| ModuleObservation {
-            id: "gds".into(),
-            version: env!("CARGO_PKG_VERSION").into(),
-            configured: true,
-            reachability: nddev_device_sync_domain::state::Reachability::NotChecked,
-            observed_at_ms: None,
-            error: None,
+        let epoch = (Some(self.source.clone()), self.operation.clone());
+        if slot.as_ref().is_some_and(|value| value.epoch != epoch) {
+            *slot = None;
+        }
+        let observation = slot.get_or_insert_with(|| super::Observed {
+            epoch,
+            value: ModuleObservation {
+                id: "gds".into(),
+                version: env!("CARGO_PKG_VERSION").into(),
+                configured: true,
+                reachability: nddev_device_sync_domain::state::Reachability::NotChecked,
+                observed_at_ms: None,
+                error: None,
+            },
         });
-        observation.observe(result, crate::github::now_ms().ok());
+        observation
+            .value
+            .observe(result, crate::github::now_ms().ok());
     }
 }
 fn admit(setting: &nddev_device_sync_vault::ModuleSetting) -> Result<(), GithubCatalogError> {
