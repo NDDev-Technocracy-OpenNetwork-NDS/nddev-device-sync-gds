@@ -408,3 +408,31 @@ async fn object_alternates_are_refused_without_reading_an_external_repository() 
     ));
     assert!(!f.first.join(".git/nds-binding.json").exists());
 }
+
+#[tokio::test]
+async fn moved_owner_directory_cannot_receive_a_clone_or_remove_its_replacement() {
+    let mut f = Fixture::new();
+    f.workspace.fixture_remote = Some(f.endpoint.clone());
+    let location = fixture_location("company", "third");
+    let owner = f.workspace.root.join("company");
+    let moved = f.workspace.root.join("company-moved");
+    let result = f
+        .workspace
+        .connect(
+            &location,
+            "generated-invalid-token",
+            &CancellationToken::new(),
+            || async { Ok(()) },
+            || {
+                std::fs::rename(&owner, &moved).unwrap();
+                std::fs::create_dir(&owner).unwrap();
+                async { Ok(()) }
+            },
+        )
+        .await;
+    assert!(matches!(result, Err(ModuleError::Busy)));
+    assert!(owner.is_dir(), "replacement directory must survive cleanup");
+    assert!(!owner.join("third").exists());
+    assert!(!moved.join("third").exists());
+    assert!(stages(&f.workspace.root).is_empty());
+}

@@ -6,7 +6,7 @@ use nddev_device_sync_domain::repositories::workspace::{
     CheckoutPresence, ConnectionBlock, ConnectionDecision, connection_decision,
 };
 use rustix::fs::{Mode, OFlags, RenameFlags, openat, renameat_with};
-use std::{io::Write, path::Path};
+use std::{io::Write, os::unix::fs::MetadataExt, path::Path};
 
 pub enum ConnectionOutcome {
     Connected {
@@ -29,25 +29,41 @@ struct EmptyOwner<'a> {
     root: &'a File,
     name: &'a str,
     created: bool,
+    identity: (u64, u64),
 }
 impl Drop for EmptyOwner<'_> {
     fn drop(&mut self) {
-        if self.created {
-            // Only an empty directory created by this operation is eligible.
+        if self.created
+            && openat(self.root, self.name, directory_flags(), Mode::empty())
+                .ok()
+                .map(File::from)
+                .and_then(|current| directory_identity(&current).ok())
+                == Some(self.identity)
+        {
+            // Only the same empty directory created by this operation is eligible.
             // Existing directories and published/user content are preserved.
             let _ = rustix::fs::unlinkat(self.root, self.name, rustix::fs::AtFlags::REMOVEDIR);
         }
     }
 }
 
+fn directory_flags() -> OFlags {
+    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC
+}
+fn directory_identity(directory: &File) -> Result<(u64, u64), ModuleError> {
+    let metadata = directory.metadata().map_err(|_| ModuleError::Unavailable)?;
+    Ok((metadata.dev(), metadata.ino()))
+}
+fn same_directory(path: &Path, directory: &File) -> bool {
+    open_directory(path)
+        .and_then(|current| directory_identity(&current))
+        .ok()
+        .is_some_and(|current| directory_identity(directory).ok() == Some(current))
+}
 fn open_directory(path: &Path) -> Result<File, ModuleError> {
-    rustix::fs::open(
-        path,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map(File::from)
-    .map_err(|_| ModuleError::Unavailable)
+    rustix::fs::open(path, directory_flags(), Mode::empty())
+        .map(File::from)
+        .map_err(|_| ModuleError::Unavailable)
 }
 fn lease(directory: &File, name: &str) -> Result<File, ModuleError> {
     let file = File::from(
@@ -195,12 +211,16 @@ impl GitWorkspace {
             Err(error) if error == rustix::io::Errno::EXIST => false,
             Err(_) => return Err(ModuleError::Unavailable),
         };
+        let owner = File::from(
+            openat(&root, location.owner(), directory_flags(), Mode::empty())
+                .map_err(|_| ModuleError::Unavailable)?,
+        );
         let _empty_owner = EmptyOwner {
             root: &root,
             name: location.owner(),
             created,
+            identity: directory_identity(&owner)?,
         };
-        let owner = open_directory(&owner_path)?;
         if collision(&owner_path, location.repository())? {
             return Ok(ConnectionOutcome::Blocked(ConnectionBlock::PathOccupied));
         }
@@ -395,7 +415,9 @@ impl GitWorkspace {
         write_binding(&git_directory, &binding)?;
         authorize(cancellation, confirm_repository).await?;
         session.validate().await?;
-        if self.root.canonicalize().ok().as_deref() != Some(self.root.as_path()) {
+        if self.root.canonicalize().ok().as_deref() != Some(self.root.as_path())
+            || !same_directory(&self.root.join(location.owner()), owner)
+        {
             return Err(ModuleError::Busy);
         }
         // NOREPLACE is an OS transaction; checking exists() then rename() would
@@ -414,6 +436,9 @@ impl GitWorkspace {
             Err(_) => return Err(ModuleError::Unavailable),
         }
         owner.sync_all().map_err(|_| ModuleError::Unavailable)?;
+        if !same_directory(&self.root.join(location.owner()), owner) {
+            return Err(ModuleError::Busy);
+        }
         // Published work is preserved even if the caller is cancelled here.
         session.validate().await?;
         Ok(ConnectionOutcome::Connected {
