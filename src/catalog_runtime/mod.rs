@@ -239,6 +239,22 @@ impl CatalogRuntime {
                 .cancel();
             return Ok(false);
         }
+        let original = self
+            .shared
+            .commits
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .guard
+            .clone();
+        if let Some(original) = original
+            && original.validate().await.is_err()
+        {
+            self.shared
+                .commits
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .cancel();
+        }
         let after = {
             let mut commits = self
                 .shared
@@ -292,27 +308,11 @@ impl CatalogRuntime {
             .location
             .ok_or(GithubCatalogError::InvalidResponse)?;
         let id = location.repository_id.value().to_string();
-        self.shared
-            .commits
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .record(
-                &epoch,
-                id.clone(),
-                GithubCommitSyncView {
-                    outcome: "running".into(),
-                    reason: String::new(),
-                    observed_at_ms: None,
-                },
-            );
         #[cfg(all(feature = "commit-sync", any(target_os = "linux", target_os = "macos")))]
-        let result = if current.conflicted {
-            Err(GithubCatalogError::Busy)
-        } else {
-            self.background
-                .synchronize_connection(&location, cancellation)
-                .await
-        };
+        let result = self
+            .background
+            .synchronize_connection(&location, cancellation)
+            .await;
         #[cfg(not(all(feature = "commit-sync", any(target_os = "linux", target_os = "macos"))))]
         let result: Result<
             nddev_device_sync_application::repositories::commits::CommitOutcome,
@@ -321,6 +321,26 @@ impl CatalogRuntime {
         self.identity
             .check_captured_local_use_lifetime(&self.authority)?;
         if cancellation.is_cancelled() {
+            return Err(GithubCatalogError::Cancelled);
+        }
+        let original = self
+            .shared
+            .commits
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .guard
+            .clone();
+        let Some(original) = original else {
+            // Refusal before a read was admitted still advances traversal; it
+            // cannot publish a running/success observation under another scope.
+            return Ok(true);
+        };
+        if original.validate().await.is_err() {
+            self.shared
+                .commits
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .cancel();
             return Err(GithubCatalogError::Cancelled);
         }
         use nddev_device_sync_application::repositories::commits::CommitOutcome;
@@ -337,19 +357,28 @@ impl CatalogRuntime {
             ),
             Err(error) => ("refused", classify_error(&error).0),
         };
-        self.shared
+        let mut progress = self
+            .shared
             .commits
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .record(
-                &epoch,
-                id,
-                GithubCommitSyncView {
-                    outcome: outcome.into(),
-                    reason,
-                    observed_at_ms: crate::github::now_ms().ok().map(|v| v.to_string()),
-                },
-            );
+            .unwrap_or_else(|e| e.into_inner());
+        if cancellation.is_cancelled()
+            || !progress
+                .guard
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &original))
+        {
+            return Err(GithubCatalogError::Cancelled);
+        }
+        progress.record(
+            &epoch,
+            id,
+            GithubCommitSyncView {
+                outcome: outcome.into(),
+                reason,
+                observed_at_ms: crate::github::now_ms().ok().map(|v| v.to_string()),
+            },
+        );
         Ok(true)
     }
 }

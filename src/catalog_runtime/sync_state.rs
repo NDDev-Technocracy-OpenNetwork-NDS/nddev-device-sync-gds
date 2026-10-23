@@ -8,6 +8,8 @@ use std::{
 
 pub(super) type Epoch = (Option<String>, Option<String>);
 pub(super) struct CommitState {
+    // One bounded read witness for this scope, not one full baseline per repo.
+    pub guard: Option<std::sync::Arc<super::driver::CatalogUseGuard>>,
     pub epoch: Option<Epoch>,
     pub queue: VecDeque<nddev_device_sync_vault::ConnectionSetting>,
     pub after: String,
@@ -18,6 +20,7 @@ pub(super) struct CommitState {
 impl Default for CommitState {
     fn default() -> Self {
         Self {
+            guard: None,
             epoch: None,
             queue: Default::default(),
             after: String::new(),
@@ -37,6 +40,7 @@ impl CommitState {
         }
     }
     pub fn cancel(&mut self) {
+        self.guard = None;
         self.queue.clear();
         self.observations.clear();
         self.after.clear();
