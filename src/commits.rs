@@ -200,9 +200,10 @@ impl GitWorkspace {
         let span = nddev_device_sync_telemetry::operation_span("gds", "io")
             .map_err(|_| ModuleError::InvalidContract)?;
         async {
-            let result = tokio::select! { biased;
-                () = cancellation.cancelled() => Err(ModuleError::Cancelled),
-                result = tokio::time::timeout_at(deadline, async {
+            // Each command/guard checks the same deadline. Let ProcessIo's
+            // cancellation path kill AND reap its child before dropping the
+            // checkout lease; dropping an outer select would skip that drain.
+            let result = async {
                     let result = async {
                         session.safe_configuration().await?;
                         let result = commits::synchronize(&mut session).await?;
@@ -214,8 +215,7 @@ impl GitWorkspace {
                     // Cancellation/outer timeout still drops the owned scope.
                     session._lease.unlock().map_err(|_| ModuleError::Unavailable)?;
                     result
-                }) => result.unwrap_or(Err(ModuleError::Timeout)),
-            };
+            }.await;
             nddev_device_sync_telemetry::finish_operation_span(&tracing::Span::current(), nddev_device_sync_domain::modules::query_outcome(&result).terminal_failure());
             match &result {
                 Ok(outcome) => tracing::info!(event.name="gds.commits.completed", module="gds", scope="io", outcome=?outcome),

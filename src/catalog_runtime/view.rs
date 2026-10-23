@@ -191,6 +191,22 @@ pub struct GithubSavedOwnerView {
 pub struct GithubSavedRepositoryView {
     pub repository: GithubRepositorySummaryView,
     pub observation: GithubObservationView,
+    pub synchronization: Option<GithubCommitSyncView>,
+}
+#[derive(Clone)]
+#[cfg_attr(
+    all(target_arch = "wasm32", feature = "browser-bindings"),
+    derive(tsify::Tsify, serde::Serialize)
+)]
+#[cfg_attr(
+    all(target_arch = "wasm32", feature = "browser-bindings"),
+    tsify(large_number_types_as_bigints, missing_as_null)
+)]
+pub struct GithubCommitSyncView {
+    pub outcome: String,
+    pub reason: String,
+    /// Actual local completion time; absent while an attempt is running.
+    pub observed_at_ms: Option<String>,
 }
 #[cfg_attr(
     all(target_arch = "wasm32", feature = "browser-bindings"),
@@ -391,6 +407,7 @@ pub(super) fn project_saved_page(
                     .repositories
                     .into_iter()
                     .map(|value| GithubSavedRepositoryView {
+                        synchronization: None,
                         repository: GithubRepositorySummaryView {
                             id: value.repository.id.value().to_string(),
                             name: value.repository.name,

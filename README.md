@@ -72,8 +72,7 @@ Raw paths, refs, command output and credentials are not telemetry fields.
 `just commit-check` exercises actual isolated Git publication, fast-forward,
 preservation, checkout locking, cancellation and server-side hook refusal.
 These checks establish local Git behavior; they do not establish positive
-GitHub credentials or Mac/Windows runtime acceptance. Relocation and activation of automatic commit synchronization remain
-separate A08 composition work. The default status-only
+GitHub credentials or Mac/Windows runtime acceptance. Relocation remains a separate explicit owner decision. The default status-only
 profile and its read-only descriptor remain unchanged.
 
 The opt-in `catalog-runtime` feature is the shared catalog composition used by
@@ -119,8 +118,23 @@ maintenance cannot extend that scope.
 Core owns the portable local marker and policy. Vault stores one encrypted
 owner-wide connection intent per repository; device markers stay local rather
 than multiplying replicated entities across 32 devices. A published checkout is
-preserved if NDS registration must be retried. Relocation and periodic commit
-sync activation remain separate A08 steps. Browser/mobile and Windows connection
+preserved if NDS registration must be retried. Relocation remains a separate explicit owner decision. Browser/mobile and Windows connection
 are reported unsupported; portable DTOs are not claims of filesystem support.
+
+With both profiles enabled, the elected native Vault owner also runs bounded
+existing-commit cycles for these saved connections. One collection runs at a
+time alongside Vault replication and authorization maintenance. It keeps the
+same election lease until cancellation has drained Git; followers cannot start
+another writer. Each attempt advances the connection traversal, including
+refusals. Pages retain at most50 encrypted intents; a completed round waits five
+minutes. No checkout is cloned by this traversal, and another device's intent
+cannot substitute for this device's local binding or write consent.
+
+Saved repository views expose this process's running/completed outcome and
+completion time, separately from the saved provider observation. Source,
+consent or owner replacement invalidates that progress; absence is no claim of
+successful synchronization. Observations are bounded to1024 repositories and
+are not additional replicated entities. Positive GitHub access still requires
+an authorized isolated provider fixture.
 
 Release journals live in [GitHub Releases](https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-gds/releases).

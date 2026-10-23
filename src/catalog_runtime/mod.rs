@@ -2,6 +2,7 @@
 //! Vault owns encrypted state and fences, and GDS owns the fixed provider I/O.
 mod consent;
 mod driver;
+mod sync_state;
 pub mod view;
 pub use driver::{CatalogClient, caller_error as classify_error};
 use nddev_device_sync_accounts::IdentityClient;
@@ -39,12 +40,17 @@ pub(super) struct Observed {
 pub struct CatalogRuntime {
     identity: Arc<IdentityClient>,
     authority: Arc<nddev_device_sync_accounts::LocalUseLifetime>,
-    admission: Arc<tokio::sync::Semaphore>,
-    cache: Arc<crate::github::CatalogCache>,
+    shared: Arc<CatalogResources>,
     background: Arc<CatalogClient>,
-    observation: Observations,
     vault: Arc<VaultClient>,
     work: Mutex<WorkSchedule>,
+    collection: Mutex<tokio_util::sync::CancellationToken>,
+}
+pub(super) struct CatalogResources {
+    observation: Observations,
+    admission: Arc<tokio::sync::Semaphore>,
+    cache: Arc<crate::github::CatalogCache>,
+    commits: Mutex<sync_state::CommitState>,
 }
 struct WorkSchedule {
     epoch: Option<(Option<String>, Option<String>)>,
@@ -56,26 +62,29 @@ impl CatalogRuntime {
         let observation = Arc::new(Mutex::new(None));
         let admission = Arc::new(tokio::sync::Semaphore::new(1));
         let cache = Arc::new(crate::github::CatalogCache::default());
+        let shared = Arc::new(CatalogResources {
+            observation,
+            admission,
+            cache,
+            commits: Mutex::default(),
+        });
         Self {
             identity: identity.clone(),
             authority: authority.clone(),
-            admission: admission.clone(),
+            shared: shared.clone(),
             background: Arc::new(CatalogClient::new(
                 identity.clone(),
                 authority,
                 identity,
                 vault.clone(),
-                observation.clone(),
-                admission,
-                cache.clone(),
+                shared,
             )),
-            observation,
-            cache,
             vault,
             work: Mutex::new(WorkSchedule {
                 epoch: None,
                 next: Some(nddev_device_sync_accounts::runtime::Instant::now()),
             }),
+            collection: Mutex::default(),
         }
     }
     pub fn foreground(&self, caller: Arc<IdentityClient>) -> Arc<CatalogClient> {
@@ -84,13 +93,19 @@ impl CatalogRuntime {
             self.authority.clone(),
             caller,
             self.vault.clone(),
-            self.observation.clone(),
-            self.admission.clone(),
-            self.cache.clone(),
+            self.shared.clone(),
         ))
     }
     pub fn cancel(&self) {
         self.background.cancel_github_catalog();
+        let mut collection = self.collection.lock().unwrap_or_else(|e| e.into_inner());
+        collection.cancel();
+        *collection = Default::default();
+        self.shared
+            .commits
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .cancel();
     }
     /// Health belongs to the exact source and consent that were actually read.
     /// A new selection/configuration cannot inherit another probe's readiness.
@@ -107,7 +122,8 @@ impl CatalogRuntime {
             return None;
         }
         let epoch = (source.operation_id, consent.operation_id);
-        self.observation
+        self.shared
+            .observation
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .as_ref()
@@ -132,8 +148,9 @@ impl CatalogRuntime {
             changed
         };
         if changed {
-            self.cancel();
+            self.background.cancel_github_catalog();
             let mut observed = self
+                .shared
                 .observation
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
@@ -189,6 +206,152 @@ impl CatalogRuntime {
             .next = Instant::now().checked_add(delay);
         Ok(more)
     }
+
+    async fn collect_commits(
+        &self,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> Result<bool, view::GithubCatalogError> {
+        use view::{GithubCatalogError, GithubCommitSyncView};
+        if !workspace_supported() || cancellation.is_cancelled() {
+            return Ok(false);
+        }
+        self.identity
+            .check_captured_local_use_lifetime(&self.authority)?;
+        let source = self.vault.github_source().await?;
+        let consent = self.vault.module_configuration("gds").await?;
+        let epoch = (source.operation_id, consent.operation_id);
+        if source.conflicted
+            || source.selection.is_none()
+            || consent.conflicted
+            || consent
+                .configuration
+                .admit(
+                    true,
+                    true,
+                    &nddev_device_sync_domain::repositories::workspace::write_permissions(),
+                )
+                .is_err()
+        {
+            self.shared
+                .commits
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .cancel();
+            return Ok(false);
+        }
+        let after = {
+            let mut commits = self
+                .shared
+                .commits
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            commits.reset(epoch.clone());
+            if !commits.ready() {
+                return Ok(false);
+            }
+            if commits.queue.is_empty() && commits.end {
+                commits.finish_round();
+                return Ok(false);
+            }
+            commits.queue.is_empty().then(|| commits.after.clone())
+        };
+        if let Some(after) = after {
+            let page = self.vault.repository_connection_page(after).await?;
+            if cancellation.is_cancelled() {
+                return Err(GithubCatalogError::Cancelled);
+            }
+            let mut commits = self
+                .shared
+                .commits
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if commits.epoch.as_ref() != Some(&epoch) {
+                return Err(GithubCatalogError::Cancelled);
+            }
+            commits.queue = page.items.into();
+            commits.after = page.next_after;
+            commits.end = !page.has_more;
+        }
+        // Remove before I/O: every refusal advances the finite traversal.
+        let current = self
+            .shared
+            .commits
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .queue
+            .pop_front();
+        let Some(current) = current else {
+            self.shared
+                .commits
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .finish_round();
+            return Ok(false);
+        };
+        let location = current
+            .location
+            .ok_or(GithubCatalogError::InvalidResponse)?;
+        let id = location.repository_id.value().to_string();
+        self.shared
+            .commits
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .record(
+                &epoch,
+                id.clone(),
+                GithubCommitSyncView {
+                    outcome: "running".into(),
+                    reason: String::new(),
+                    observed_at_ms: None,
+                },
+            );
+        #[cfg(all(feature = "commit-sync", any(target_os = "linux", target_os = "macos")))]
+        let result = if current.conflicted {
+            Err(GithubCatalogError::Busy)
+        } else {
+            self.background
+                .synchronize_connection(&location, cancellation)
+                .await
+        };
+        #[cfg(not(all(feature = "commit-sync", any(target_os = "linux", target_os = "macos"))))]
+        let result: Result<
+            nddev_device_sync_application::repositories::commits::CommitOutcome,
+            _,
+        > = Err(GithubCatalogError::Unavailable);
+        self.identity
+            .check_captured_local_use_lifetime(&self.authority)?;
+        if cancellation.is_cancelled() {
+            return Err(GithubCatalogError::Cancelled);
+        }
+        use nddev_device_sync_application::repositories::commits::CommitOutcome;
+        let (outcome, reason) = match result {
+            Ok(CommitOutcome::UpToDate) => ("up_to_date", String::new()),
+            Ok(CommitOutcome::Published) => ("published", String::new()),
+            Ok(CommitOutcome::FastForwarded) => ("fast_forwarded", String::new()),
+            Ok(CommitOutcome::Blocked(reason)) => (
+                "blocked",
+                serde_json::to_value(reason)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_owned))
+                    .unwrap_or_else(|| "invalid_response".into()),
+            ),
+            Err(error) => ("refused", classify_error(&error).0),
+        };
+        self.shared
+            .commits
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .record(
+                &epoch,
+                id,
+                GithubCommitSyncView {
+                    outcome: outcome.into(),
+                    reason,
+                    observed_at_ms: crate::github::now_ms().ok().map(|v| v.to_string()),
+                },
+            );
+        Ok(true)
+    }
 }
 
 impl nddev_device_sync_application::repositories::catalog::collection::CatalogCollector
@@ -197,7 +360,17 @@ impl nddev_device_sync_application::repositories::catalog::collection::CatalogCo
     fn collect(
         self: Arc<Self>,
     ) -> nddev_device_sync_application::repositories::catalog::collection::Collection {
+        // Capture at admission, before spawning; cancellation before the first
+        // poll cannot create a fresh grant or start another Git operation.
+        let cancellation = self
+            .collection
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         Box::pin(async move {
+            if cancellation.is_cancelled() {
+                return Default::default();
+            }
             let before = self.vault.snapshot().local_revision;
             let result = observe(
                 "gds",
@@ -214,9 +387,10 @@ impl nddev_device_sync_application::repositories::catalog::collection::CatalogCo
                 classify_error,
             )
             .await;
+            let commits = self.collect_commits(&cancellation).await;
             nddev_device_sync_application::repositories::catalog::collection::CollectionProgress {
                 local_changes: self.vault.snapshot().local_revision != before,
-                continue_traversal: matches!(result, Ok(true)),
+                continue_traversal: matches!(result, Ok(true)) || matches!(commits, Ok(true)),
             }
         })
     }
