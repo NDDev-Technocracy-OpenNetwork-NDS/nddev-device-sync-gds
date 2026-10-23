@@ -659,3 +659,38 @@ async fn actual_server_refusal_keeps_local_commit_and_remote_head() {
     assert_eq!(git(&fixture.first, &["rev-parse", "HEAD"]), local);
     assert!(git(&fixture.first, &["status", "--porcelain"]).is_empty());
 }
+
+#[tokio::test]
+async fn refused_dirty_checkout_does_not_prevent_the_next_repository_from_publishing() {
+    let blocked = Fixture::new();
+    let eligible = Fixture::new();
+    let original_head = git(&blocked.first, &["rev-parse", "HEAD"]);
+    let original_index = std::fs::read(blocked.first.join(".git/index")).unwrap();
+    std::fs::write(blocked.first.join("initial.txt"), b"uncommitted work\n").unwrap();
+    let published = commit(
+        &eligible.first,
+        "existing.txt",
+        "existing commit to publish",
+    );
+    let mut outcomes = Vec::new();
+    for fixture in [&blocked, &eligible] {
+        outcomes.push(fixture.synchronize(&fixture.first).await.unwrap());
+    }
+    assert_eq!(
+        outcomes,
+        [
+            CommitOutcome::Blocked(SyncBlock::Dirty),
+            CommitOutcome::Published
+        ]
+    );
+    assert_eq!(eligible.remote_head(), published);
+    assert_eq!(git(&blocked.first, &["rev-parse", "HEAD"]), original_head);
+    assert_eq!(
+        std::fs::read(blocked.first.join(".git/index")).unwrap(),
+        original_index
+    );
+    assert_eq!(
+        std::fs::read(blocked.first.join("initial.txt")).unwrap(),
+        b"uncommitted work\n"
+    );
+}
