@@ -255,7 +255,7 @@ impl Drop for Flight<'_> {
 /// This exact guard is the callback required inside GDS before EACH provider GET
 /// and final return, within its overall deadline; an outer recheck is insufficient.
 #[derive(Clone)]
-struct CatalogUseGuard {
+pub(super) struct CatalogUseGuard {
     module: Arc<ModuleUseGuard>,
     identity: Arc<IdentityClient>,
     vault: Arc<VaultClient>,
@@ -276,7 +276,7 @@ impl CatalogUseGuard {
             Ok(())
         }
     }
-    async fn validate(&self) -> Result<(), GithubCatalogError> {
+    pub(super) async fn validate(&self) -> Result<(), GithubCatalogError> {
         self.module.validate().await?;
         self.check()?;
         self.identity.validate_local_use(&self.fence).await?;
@@ -941,21 +941,22 @@ impl CatalogClient {
                         let mut view = project_saved_page(groups, page.observed_seq, page.local_revision, page.next.is_some());
                         let source = self.vault.github_source().await?;
                         let consent = self.vault.module_configuration("gds").await?;
-                        // A saved source ID alone cannot make old progress current
-                        // after its credential revision or pending value changed.
-                        let current = if let Some(operation) = source.operation_id.as_deref() {
-                            match self.vault.capture_configured_repository_observations(
-                                &nddev_device_sync_domain::repositories::workspace::write_permissions(), operation,
-                                fence.clone(), flight.cancellation.as_ref().clone(),
-                            ).await {
-                                Ok(read) => self.vault.validate_repository_read(&read).await.is_ok(),
-                                Err(_) => false,
-                            }
-                        } else { false };
+                        // Validate the ORIGINAL read, not a fresh replacement.
+                        // Coalescing an undispatched Vault edit can preserve IDs
+                        // while changing the encrypted source/credential/consent.
+                        let original = self.shared.commits.lock().unwrap_or_else(|e| e.into_inner()).guard.clone();
+                        let current = match &original {
+                            Some(guard) => guard.validate().await.is_ok(),
+                            None => false,
+                        };
                         self.caller.validate_local_use(&caller_fence).await?;
                         let epoch = (source.operation_id, consent.operation_id);
                         let commits = self.shared.commits.lock().unwrap_or_else(|e| e.into_inner());
-                        if current && !source.conflicted && !consent.conflicted {
+                        let same = match (&original, &commits.guard) {
+                            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+                            _ => false,
+                        };
+                        if current && same && !source.conflicted && !consent.conflicted {
                             for group in &mut view.groups {
                                 for item in &mut group.repositories {
                                     item.synchronization = commits.observation(&epoch, &item.repository.id);
