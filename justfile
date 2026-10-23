@@ -2,8 +2,8 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 
 check:
     cargo fmt -- --check
-    cargo clippy --locked --all-targets -- -D warnings
-    cargo test --locked
+    cargo clippy --locked --all-targets --all-features -- -D warnings
+    cargo test --locked --all-features
 
 provider-check:
     cargo test --locked --test provider --test isolation

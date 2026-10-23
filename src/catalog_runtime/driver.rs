@@ -21,6 +21,9 @@ mod reconciliation;
 use reconciliation::{ResolutionBatch, ScopeResolution};
 #[path = "connection.rs"]
 mod connection;
+#[cfg(all(feature = "commit-sync", any(target_os = "linux", target_os = "macos")))]
+#[path = "synchronization.rs"]
+mod synchronization;
 
 /// One caller lifetime over the canonical Core/Vault catalog pipeline.
 /// Runtime composition supplies independent foreground/background sessions and
@@ -32,9 +35,7 @@ pub struct CatalogClient {
     caller: Arc<IdentityClient>,
     vault: Arc<VaultClient>,
     active: std::sync::atomic::AtomicBool,
-    observation: super::Observations,
-    admission: Arc<tokio::sync::Semaphore>,
-    cache: Arc<crate::github::CatalogCache>,
+    shared: Arc<super::CatalogResources>,
 }
 impl CatalogClient {
     pub(super) fn continuation(&self) -> bool {
@@ -52,9 +53,7 @@ impl CatalogClient {
         authority: Arc<nddev_device_sync_accounts::LocalUseLifetime>,
         caller: Arc<IdentityClient>,
         vault: Arc<VaultClient>,
-        observation: super::Observations,
-        admission: Arc<tokio::sync::Semaphore>,
-        cache: Arc<crate::github::CatalogCache>,
+        shared: Arc<super::CatalogResources>,
     ) -> Self {
         Self {
             catalog: Mutex::default(),
@@ -63,9 +62,7 @@ impl CatalogClient {
             caller,
             vault,
             active: std::sync::atomic::AtomicBool::new(true),
-            observation,
-            admission,
-            cache,
+            shared,
         }
     }
     fn shared_identity(&self) -> &Arc<IdentityClient> {
@@ -93,7 +90,7 @@ impl CatalogClient {
             ModuleUseGuard::capture(
                 self.identity.clone(),
                 self.vault.clone(),
-                self.observation.clone(),
+                self.shared.observation.clone(),
                 source.to_owned(),
                 required.clone(),
             )
@@ -585,7 +582,7 @@ impl CatalogClient {
             return Err(GithubCatalogError::Unavailable);
         }
         let port = CatalogPort {
-            cache: self.cache.clone(),
+            cache: self.shared.cache.clone(),
             source_operation,
             caller: self.caller.clone(),
             caller_fence,
@@ -941,7 +938,31 @@ impl CatalogClient {
                         self.shared_identity().validate_local_use(&fence).await?;
                         flight.check()?;
                         self.caller.validate_local_use(&caller_fence).await?;
-                        let view = project_saved_page(groups, page.observed_seq, page.local_revision, page.next.is_some());
+                        let mut view = project_saved_page(groups, page.observed_seq, page.local_revision, page.next.is_some());
+                        let source = self.vault.github_source().await?;
+                        let consent = self.vault.module_configuration("gds").await?;
+                        // A saved source ID alone cannot make old progress current
+                        // after its credential revision or pending value changed.
+                        let current = if let Some(operation) = source.operation_id.as_deref() {
+                            match self.vault.capture_configured_repository_observations(
+                                &nddev_device_sync_domain::repositories::workspace::write_permissions(), operation,
+                                fence.clone(), flight.cancellation.as_ref().clone(),
+                            ).await {
+                                Ok(read) => self.vault.validate_repository_read(&read).await.is_ok(),
+                                Err(_) => false,
+                            }
+                        } else { false };
+                        self.caller.validate_local_use(&caller_fence).await?;
+                        let epoch = (source.operation_id, consent.operation_id);
+                        let commits = self.shared.commits.lock().unwrap_or_else(|e| e.into_inner());
+                        if current && !source.conflicted && !consent.conflicted {
+                            for group in &mut view.groups {
+                                for item in &mut group.repositories {
+                                    item.synchronization = commits.observation(&epoch, &item.repository.id);
+                                }
+                            }
+                        }
+                        drop(commits);
                         let mut state = self.catalog.lock().unwrap_or_else(|e| e.into_inner());
                         flight.check()?;
                         if !Arc::ptr_eq(&state.lifetime, &flight.lifetime) {
@@ -966,7 +987,7 @@ impl CatalogClient {
             "gds",
             "gds.catalog.page.read",
             async {
-                let _provider = self
+                let _provider = self.shared
                     .admission
                     .try_acquire()
                     .map_err(|_| GithubCatalogError::Busy)?;

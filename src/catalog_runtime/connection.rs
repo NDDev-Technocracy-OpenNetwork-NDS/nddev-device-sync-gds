@@ -49,6 +49,7 @@ impl CatalogClient {
             ConnectionBlock, write_permissions,
         };
         let _admission = self
+            .shared
             .admission
             .try_acquire()
             .map_err(|_| GithubCatalogError::Busy)?;
@@ -187,7 +188,7 @@ fn blocked(
     }
 }
 #[cfg(all(feature = "commit-sync", any(target_os = "linux", target_os = "macos")))]
-fn operation_error(
+pub(super) fn operation_error(
     error: nddev_device_sync_domain::modules::ModuleError,
     errors: &Mutex<Option<GithubCatalogError>>,
 ) -> GithubCatalogError {
@@ -198,7 +199,7 @@ fn operation_error(
         .unwrap_or_else(|| error.into())
 }
 #[cfg(all(feature = "commit-sync", any(target_os = "linux", target_os = "macos")))]
-async fn fresh_repository(
+pub(super) async fn fresh_repository(
     guard: &CatalogUseGuard,
     location: &CheckoutLocation,
     credential: &str,
