@@ -39,6 +39,137 @@ fn published_binding(outcome: ConnectionOutcome) -> CheckoutBinding {
     }
 }
 
+#[test]
+fn default_workspace_uses_nds_without_moving_previous_work() {
+    // A child process gives the real factory a separate HOME without changing
+    // the environment of concurrently running tests.
+    const HOME: &str = "NDS_WORKSPACE_TEST_HOME";
+    if let Some(home) = std::env::var_os(HOME) {
+        let home = PathBuf::from(home).canonicalize().unwrap();
+        let workspace = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(GitWorkspace::default_workspace(
+                WorkspacePrincipal {
+                    origin: "https://nds.example.invalid".into(),
+                    tenant: "company".into(),
+                    user: "owner".into(),
+                    device: "device".into(),
+                },
+                || async { Ok(()) },
+            ))
+            .unwrap();
+        assert_eq!(workspace.root, home.join("Developer/NDS"));
+        assert_eq!(
+            std::fs::read(home.join("Developer/nddev/kept.txt")).unwrap(),
+            b"user work"
+        );
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(directory.path().join("Developer/nddev")).unwrap();
+    std::fs::write(
+        directory.path().join("Developer/nddev/kept.txt"),
+        "user work",
+    )
+    .unwrap();
+    let result = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "commits::tests::workspace_tests::default_workspace_uses_nds_without_moving_previous_work",
+            "--nocapture",
+        ])
+        .env(HOME, directory.path())
+        .env("HOME", directory.path())
+        .output()
+        .unwrap();
+    assert!(result.status.success(), "{result:?}");
+    assert!(directory.path().join("Developer/NDS").is_dir());
+}
+
+#[tokio::test]
+async fn previous_checkout_blocks_duplicate_clone_and_preserves_dirty_work() {
+    let mut f = Fixture::new();
+    f.workspace.fixture_remote = Some(f.endpoint.clone());
+    let location = fixture_location("company", "third");
+    let previous = f
+        .workspace
+        .root
+        .parent()
+        .unwrap()
+        .join("nddev")
+        .join(location.relative_path());
+    std::fs::create_dir_all(previous.parent().unwrap()).unwrap();
+    git(
+        &f.workspace.root,
+        &["clone", &f.endpoint, previous.to_str().unwrap()],
+    );
+    std::fs::write(previous.join("initial.txt"), "uncommitted user work").unwrap();
+    let index = std::fs::read(previous.join(".git/index")).unwrap();
+    let head = git(&previous, &["rev-parse", "HEAD"]);
+    let result = f
+        .workspace
+        .connect(
+            &location,
+            "generated-invalid-token",
+            &CancellationToken::new(),
+            || async { Ok(()) },
+            || async { panic!("a duplicate clone must be refused before provider publication") },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        result,
+        ConnectionOutcome::Blocked(ConnectionBlock::RelocationRequired)
+    ));
+    assert_eq!(git(&previous, &["rev-parse", "HEAD"]), head);
+    assert_eq!(std::fs::read(previous.join(".git/index")).unwrap(), index);
+    assert_eq!(
+        std::fs::read(previous.join("initial.txt")).unwrap(),
+        b"uncommitted user work"
+    );
+    assert!(!f.workspace.root.join(location.relative_path()).exists());
+    assert!(stages(&f.workspace.root).is_empty());
+}
+
+#[tokio::test]
+async fn previous_location_occupied_during_clone_blocks_publication() {
+    let mut f = Fixture::new();
+    f.workspace.fixture_remote = Some(f.endpoint.clone());
+    let location = fixture_location("company", "third");
+    let previous = f
+        .workspace
+        .root
+        .parent()
+        .unwrap()
+        .join("nddev")
+        .join(location.relative_path());
+    let result = f
+        .workspace
+        .connect(
+            &location,
+            "generated-invalid-token",
+            &CancellationToken::new(),
+            || async { Ok(()) },
+            || async {
+                std::fs::create_dir_all(&previous).unwrap();
+                std::fs::write(previous.join("kept.txt"), "concurrent user work").unwrap();
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        result,
+        ConnectionOutcome::Blocked(ConnectionBlock::RelocationRequired)
+    ));
+    assert_eq!(
+        std::fs::read(previous.join("kept.txt")).unwrap(),
+        b"concurrent user work"
+    );
+    assert!(!f.workspace.root.join(location.relative_path()).exists());
+    assert!(stages(&f.workspace.root).is_empty());
+}
+
 #[tokio::test]
 async fn provider_identity_refusal_after_clone_cannot_publish_the_worktree() {
     let mut f = Fixture::new();

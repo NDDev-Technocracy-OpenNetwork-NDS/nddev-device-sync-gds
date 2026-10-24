@@ -75,7 +75,7 @@ fn native_cycle_future_is_send_for_the_existing_owned_background_task() {
 impl Fixture {
     fn new() -> Self {
         let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("Developer/nddev");
+        let root = directory.path().join("Developer/NDS");
         std::fs::create_dir_all(&root).unwrap();
         let remote = directory.path().join("remote.git");
         let endpoint = remote.to_str().unwrap().replace('\\', "/");
