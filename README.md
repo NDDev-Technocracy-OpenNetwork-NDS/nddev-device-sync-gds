@@ -53,7 +53,7 @@ has not been supplied. Credentials/fences, shared NdsClient and CSP are separate
 owner integrations; the catalog profile performs no persistence or Git writes.
 
 The separate opt-in `commit-sync` profile adds `commits::GitWorkspace` for an
-existing checkout under an authorized `Developer/nddev/<owner>/<repository>`
+existing checkout under an authorized `Developer/NDS/<owner>/<repository>`
 root. Core owns portable locations and the commit cycle. The native adapter
 holds one checkout lease, checks the exact origin/upstream and local witness,
 requires a matching durable `.git/nds-binding.json` identity, fetches, and either
@@ -106,7 +106,7 @@ separate `git_write` consent. Reading a catalog or enabling process execution
 never implies that grant. The fixed GitHub metadata read confirms repository
 and owner IDs before I/O and again before filesystem publication.
 
-Connections use `~/Developer/nddev/<owner>/<repository>`. An existing checkout
+Connections use `~/Developer/NDS/<owner>/<repository>`. An existing checkout
 is adopted only with a matching explicit GitHub origin; SSH aliases are not
 resolved and its origin, index, branches and dirty files remain unchanged.
 A new clone is prepared in owned staging and published with an OS no-replace
@@ -114,6 +114,13 @@ rename. Occupied paths, case collisions, symlinks, active writers and different
 NDS/GitHub identities are refused. Git helpers share the existing bounded
 ProcessIo owner; hooks, external object stores, replacement objects and automatic
 maintenance cannot extend that scope.
+
+If a checkout still occupies the previous `~/Developer/nddev/<owner>/<repository>`
+location and the new target is absent, connection reports relocation required.
+It preserves the old checkout and checks again before publishing a staged clone.
+The module never moves existing work or creates a replacement automatically.
+Gitlinks remain protected by the existing submodule refusal until their nested
+repositories have qualified authorization and preservation handling.
 
 Core owns the portable local marker and policy. Vault stores one encrypted
 owner-wide connection intent per repository; device markers stay local rather

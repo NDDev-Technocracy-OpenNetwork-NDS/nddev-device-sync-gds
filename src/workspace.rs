@@ -130,7 +130,7 @@ impl GitWorkspace {
             .filter(|path| path.is_absolute())
             .ok_or(ModuleError::Unavailable)?;
         let mut root = home.canonicalize().map_err(|_| ModuleError::Unavailable)?;
-        for component in ["Developer", "nddev"] {
+        for component in ["Developer", "NDS"] {
             admitted().await.unwrap_or(Err(ModuleError::Timeout))?;
             let parent = open_directory(&root)?;
             match rustix::fs::mkdirat(&parent, component, Mode::RWXU) {
@@ -234,6 +234,11 @@ impl GitWorkspace {
             Err(_) => return Err(ModuleError::Unavailable),
         };
         if !present {
+            if self.legacy_checkout_present(location)? {
+                return Ok(ConnectionOutcome::Blocked(
+                    ConnectionBlock::RelocationRequired,
+                ));
+            }
             return self
                 .clone_at(
                     location,
@@ -314,6 +319,30 @@ impl GitWorkspace {
             id: uuid::Uuid::new_v4().to_string(),
             principal: self.principal.clone(),
             location: location.clone(),
+        }
+    }
+    fn legacy_checkout_present(&self, location: &CheckoutLocation) -> Result<bool, ModuleError> {
+        // The previous default is never moved or adopted implicitly. A saved
+        // connection must not silently create a second checkout in the new root.
+        if self.root.file_name().is_none_or(|name| name != "NDS")
+            || self
+                .root
+                .parent()
+                .and_then(Path::file_name)
+                .is_none_or(|name| name != "Developer")
+        {
+            return Ok(false);
+        }
+        let previous = self
+            .root
+            .parent()
+            .ok_or(ModuleError::InvalidInput)?
+            .join("nddev")
+            .join(location.relative_path());
+        match std::fs::symlink_metadata(previous) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(_) => Err(ModuleError::Unavailable),
         }
     }
     fn connection_session<G, F>(
@@ -427,6 +456,11 @@ impl GitWorkspace {
             || !same_directory(&self.root.join(location.owner()), owner)
         {
             return Err(ModuleError::Busy);
+        }
+        if self.legacy_checkout_present(location)? {
+            return Ok(ConnectionOutcome::Blocked(
+                ConnectionBlock::RelocationRequired,
+            ));
         }
         // NOREPLACE is an OS transaction; checking exists() then rename() would
         // overwrite an empty directory created by another writer in between.
