@@ -16,13 +16,16 @@ use nddev_device_sync_domain::{
 use std::{
     ffi::OsString,
     fs::{File, OpenOptions},
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::Duration,
 };
 use tracing::Instrument;
 use zeroize::Zeroizing;
 
 const OUTPUT_BYTES: usize = 1_048_576;
+
+#[path = "submodules.rs"]
+mod submodules;
 
 /// Native-only capability, intentionally neither Debug nor Serialize. The Git
 /// executable is resolved by the installation, never by repository metadata.
@@ -248,6 +251,7 @@ struct Witness {
     origin: String,
     status: Vec<u8>,
     active_writer: bool,
+    submodules: Vec<submodules::SubmoduleWitness>,
 }
 
 impl<G, F> Session<'_, G>
@@ -272,6 +276,15 @@ where
         Ok(())
     }
     async fn git(&mut self, arguments: &[&str]) -> Result<ProcessOutput, ModuleError> {
+        self.git_in(&self.checkout.clone(), &self.git_dir.clone(), arguments)
+            .await
+    }
+    async fn git_in(
+        &mut self,
+        checkout: &Path,
+        git_dir: &Path,
+        arguments: &[&str],
+    ) -> Result<ProcessOutput, ModuleError> {
         self.validate().await?;
         let network = matches!(arguments.first(), Some(&"fetch" | &"push" | &"clone"));
         let mut argv: Vec<OsString> = [
@@ -298,6 +311,16 @@ where
         .into_iter()
         .map(Into::into)
         .collect();
+        // Never let a submodule's core.worktree or Git discovery select a
+        // different checkout. Paths are qualified before any child command.
+        if arguments.first() != Some(&"clone") {
+            let mut directory_arg = OsString::from("--git-dir=");
+            directory_arg.push(git_dir);
+            argv.push(directory_arg);
+            let mut worktree_arg = OsString::from("--work-tree=");
+            worktree_arg.push(checkout);
+            argv.push(worktree_arg);
+        }
         if network {
             argv.extend([
                 OsString::from("-c"),
@@ -323,7 +346,7 @@ where
                 ProcessRequest {
                     executable: self.workspace.git.clone(),
                     arguments: argv,
-                    directory: Some(self.checkout.clone()),
+                    directory: Some(checkout.to_path_buf()),
                     timeout: self
                         .deadline
                         .saturating_duration_since(tokio::time::Instant::now())
@@ -361,7 +384,16 @@ where
         text(result.stdout)
     }
     async fn safe_configuration(&mut self) -> Result<(), ModuleError> {
-        if self.git_dir.join("commondir").exists() {
+        self.safe_configuration_in(&self.checkout.clone(), &self.git_dir.clone(), false)
+            .await
+    }
+    async fn safe_configuration_in(
+        &mut self,
+        checkout: &Path,
+        git_dir: &Path,
+        child: bool,
+    ) -> Result<(), ModuleError> {
+        if std::fs::symlink_metadata(git_dir.join("commondir")).is_ok() {
             return Err(ModuleError::Unavailable);
         }
         for name in [
@@ -369,17 +401,17 @@ where
             "objects/info/http-alternates",
             "info/grafts",
         ] {
-            if std::fs::symlink_metadata(self.git_dir.join(name)).is_ok() {
+            if std::fs::symlink_metadata(git_dir.join(name)).is_ok() {
                 return Err(ModuleError::Unavailable);
             }
         }
         for name in [
             "config", "objects", "refs", "HEAD", "index", "logs", "hooks",
         ] {
-            self.no_symlink(&self.git_dir.join(name))?;
+            self.no_symlink(&git_dir.join(name))?;
         }
         let settings = self
-            .optional(&[
+            .git_in(checkout, git_dir, &[
                 "config",
                 "--no-includes",
                 "--local",
@@ -388,23 +420,44 @@ where
                 r"^(include|includeif|url|filter|http|push\.pushoption|core\.(worktree|bare|hookspath|alternaterefscommand)|extensions)",
             ])
             .await?;
+        if !settings.status.success() && settings.status.code() != Some(1) {
+            return Err(ModuleError::ProviderFailed);
+        }
+        let settings = text(settings.stdout)?;
         // core.bare=false is ordinary clone metadata. Every other named
         // setting here changes path/transport or executes an external driver.
-        if settings.lines().any(|key| key != "core.bare") {
+        if settings
+            .lines()
+            .any(|key| key != "core.bare" && !(child && key == "core.worktree"))
+        {
             return Err(ModuleError::Unavailable);
         }
-        // Status can run clean filters inside submodules. Their independent
-        // configurations are not qualified by this existing-checkout profile.
-        let index = self.required(&["ls-files", "--stage", "-z"]).await?;
-        if index
-            .split(|b| *b == 0)
-            .any(|entry| entry.starts_with(b"160000 "))
-        {
-            tracing::warn!(event.name="gds.commits.refused",module="gds",scope="io",error.type="unsupported_submodule",outcome="rejected");
-            return Err(ModuleError::Unavailable);
+        if child && settings.lines().any(|key| key == "core.worktree") {
+            let value = self
+                .git_in(
+                    checkout,
+                    git_dir,
+                    &[
+                        "config",
+                        "--no-includes",
+                        "--local",
+                        "--get-all",
+                        "core.worktree",
+                    ],
+                )
+                .await?;
+            if !value.status.success() {
+                return Err(ModuleError::Unavailable);
+            }
+            let value = text(value.stdout)?;
+            if value.lines().count() != 1
+                || git_dir.join(&value).canonicalize().ok().as_deref() != Some(checkout)
+            {
+                return Err(ModuleError::Unavailable);
+            }
         }
         for name in ["pre-push", "post-merge", "post-checkout"] {
-            if self.git_dir.join("hooks").join(name).exists() {
+            if git_dir.join("hooks").join(name).exists() {
                 return Err(ModuleError::Unavailable);
             }
         }
@@ -437,23 +490,10 @@ where
         Ok(())
     }
     fn active_writer(&self) -> bool {
-        [
-            "index.lock",
-            "HEAD.lock",
-            "packed-refs.lock",
-            "shallow.lock",
-            "MERGE_HEAD",
-            "CHERRY_PICK_HEAD",
-            "REVERT_HEAD",
-            "rebase-merge",
-            "rebase-apply",
-            "sequencer",
-            "BISECT_LOG",
-        ]
-        .into_iter()
-        .any(|name| self.git_dir.join(name).exists())
+        submodules::active_writer(&self.git_dir)
     }
     async fn witness(&mut self) -> Result<Witness, ModuleError> {
+        self.safe_configuration().await?;
         let branch = self.optional(&["symbolic-ref", "--quiet", "HEAD"]).await?;
         let head = self
             .optional(&["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
@@ -461,6 +501,7 @@ where
         if !head.is_empty() {
             oid(&head)?;
         }
+        let submodules = self.submodule_witnesses(&head).await?;
         let upstream = if head.is_empty() || branch.is_empty() {
             String::new()
         } else {
@@ -488,10 +529,11 @@ where
                 "--porcelain=v2",
                 "-z",
                 "--untracked-files=normal",
-                "--ignore-submodules=none",
+                "--ignore-submodules=all",
             ])
             .await?;
         let active_writer = self.active_writer()
+            || submodules.iter().any(|child| child.active_writer)
             || (!branch.is_empty() && self.git_dir.join(format!("{branch}.lock")).exists());
         Ok(Witness {
             branch,
@@ -500,6 +542,7 @@ where
             origin,
             status,
             active_writer,
+            submodules,
         })
     }
     async fn unchanged(&mut self, expected: &Witness) -> Result<(), ModuleError> {
@@ -520,7 +563,14 @@ where
     type Witness = Witness;
     async fn inspect(&mut self) -> Result<Inspection<Witness>, ModuleError> {
         let witness = self.witness().await?;
-        let mut changes = Changes::default();
+        let mut changes = Changes {
+            submodule_changes: witness
+                .submodules
+                .iter()
+                .filter(|child| child.dirty)
+                .count() as u32,
+            ..Changes::default()
+        };
         let mut rows = witness.status.split(|b| *b == 0);
         while let Some(row) = rows.next() {
             if row.is_empty() {
@@ -622,11 +672,11 @@ where
         let tree = self
             .required(&["ls-tree", "-r", "--full-tree", "-z", &fetched])
             .await?;
-        if tree
-            .split(|b| *b == 0)
-            .any(|entry| entry.starts_with(b"160000 "))
-        {
-            tracing::warn!(event.name="gds.commits.refused",module="gds",scope="io",error.type="unsupported_submodule",outcome="rejected");
+        let current_tree = self
+            .required(&["ls-tree", "-r", "--full-tree", "-z", &expected.head])
+            .await?;
+        if submodules::graph(&tree)? != submodules::graph(&current_tree)? {
+            tracing::warn!(event.name="gds.commits.refused",module="gds",scope="io",error.type="changed_submodule_graph",outcome="rejected");
             return Err(ModuleError::Unavailable);
         }
         // A branch switch during fetch must not authorize a different branch.

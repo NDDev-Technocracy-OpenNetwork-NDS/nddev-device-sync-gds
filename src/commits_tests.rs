@@ -1,5 +1,7 @@
 //! Actual isolated Git repositories, objects, ref transactions and worktrees.
 //! Local transport does not establish positive GitHub credential acceptance.
+#[path = "submodule_tests.rs"]
+mod submodule_tests;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[path = "workspace_tests.rs"]
 mod workspace_tests;
@@ -77,6 +79,9 @@ impl Fixture {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("Developer/NDS");
         std::fs::create_dir_all(&root).unwrap();
+        // macOS exposes temporary storage through /var -> /private/var.
+        // Match the production constructor's canonical workspace root.
+        let root = root.canonicalize().unwrap();
         let remote = directory.path().join("remote.git");
         let endpoint = remote.to_str().unwrap().replace('\\', "/");
         git(
