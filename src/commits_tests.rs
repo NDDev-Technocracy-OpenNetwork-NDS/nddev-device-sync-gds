@@ -1,5 +1,7 @@
 //! Actual isolated Git repositories, objects, ref transactions and worktrees.
 //! Local transport does not establish positive GitHub credential acceptance.
+#[path = "submodule_tests.rs"]
+mod submodule_tests;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[path = "workspace_tests.rs"]
 mod workspace_tests;
