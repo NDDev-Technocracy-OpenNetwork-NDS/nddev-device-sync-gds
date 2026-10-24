@@ -119,8 +119,15 @@ If a checkout still occupies the previous `~/Developer/nddev/<owner>/<repository
 location and the new target is absent, connection reports relocation required.
 It preserves the old checkout and checks again before publishing a staged clone.
 The module never moves existing work or creates a replacement automatically.
-Gitlinks remain protected by the existing submodule refusal until their nested
-repositories have qualified authorization and preservation handling.
+Existing initialized submodules are inspected separately with bounded native
+commands after checking their paths, Git directories and configuration. Parent
+commit cycles require unchanged gitlink paths, pinned commits and `.gitmodules`
+between the local and fetched trees. Dirty or active children block the cycle;
+their HEADs, indices and files are never updated. Traversal is bounded to 1,024
+children, 16 levels and 8 MiB of observed output within the existing deadline.
+Uninitialized or unsafe children and graph changes remain explicit refusals.
+Recursive initialization, child publication and graph reconciliation are not
+implemented by this profile.
 
 Core owns the portable local marker and policy. Vault stores one encrypted
 owner-wide connection intent per repository; device markers stay local rather
