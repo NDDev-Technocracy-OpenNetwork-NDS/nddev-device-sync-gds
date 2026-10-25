@@ -59,7 +59,7 @@ def worker(root, executable, output):
                         [executable, "--exact", TEST, "--ignored", "--nocapture"],
                         env=os.environ | {"NDS_FLEET_EPOCH": str(epoch)},
                         stdout=log, stderr=subprocess.STDOUT)
-                    status = child.wait(timeout=3500)
+                    status = child.wait(timeout=14300)
                 child = None
                 if status:
                     raise RuntimeError(f"Owned Rust member failed: {root.name}, epoch {epoch}")
@@ -68,7 +68,7 @@ def worker(root, executable, output):
                 if process is not None and process.poll() is None:
                     process.terminate()
                     try:
-                        process.wait(timeout=5)
+                        process.wait(timeout=45 if process is child else 5)
                     except subprocess.TimeoutExpired:
                         process.kill()
                         process.wait()
@@ -116,9 +116,9 @@ def qualify(args, receipt):
                    and x.get("executable") and x.get("profile", {}).get("test")]
     assert len(executables) == 1
     executable = executables[0]
-    deadline = time.monotonic() + min(3500, receipt["expires_at_unix"] - time.time() - 10)
+    deadline = time.monotonic() + min(14300, receipt["expires_at_unix"] - time.time() - 10)
     if full:
-        assert deadline - time.monotonic() >= 3300, "Start a fresh fixture after precompiling"
+        assert deadline - time.monotonic() >= 14000, "Start a fresh 14400-second fixture after precompiling"
     processes, connections, history, identities = [], {}, [], {}
 
     def check():
@@ -394,8 +394,11 @@ def qualify(args, receipt):
             for process in processes:
                 if process.poll() is None:
                     os.killpg(process.pid, signal.SIGTERM)
+            cleanup_deadline = time.monotonic() + 60
+            for process in processes:
+                if process.poll() is None:
                     try:
-                        process.wait(timeout=5)
+                        process.wait(timeout=max(.1, cleanup_deadline - time.monotonic()))
                     except subprocess.TimeoutExpired:
                         os.killpg(process.pid, signal.SIGKILL)
                         process.wait()

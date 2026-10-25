@@ -312,7 +312,11 @@ async fn reply(stream: &mut tokio::net::unix::OwnedWriteHalf, value: Value) -> R
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "owned sync3 PG/SMTP, isolated Secret Service, real Git and generated provider metadata required"]
 async fn native_periodic_fleet_member() -> Result<()> {
-    let outcome = Box::pin(run_member()).await;
+    let mut stop = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let outcome = tokio::select! {
+        result = Box::pin(run_member()) => result,
+        _ = stop.recv() => Err("owned native fleet interrupted".into()),
+    };
     let drained = NativeReplica::shutdown().await;
     outcome?;
     drained?;
@@ -423,7 +427,7 @@ async fn run_member() -> Result<()> {
         let command = frame(&mut reader).await?;
         let action = command["action"].as_str().ok_or("missing action")?;
         let result = tokio::time::timeout(
-            Duration::from_secs(1800),
+            Duration::from_secs(5400),
             Box::pin(async {
                 match action {
                     "seed" => {

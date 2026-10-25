@@ -169,7 +169,7 @@ It drives 2–32 separate Rust processes, native Secret Services and replicas,
 with 2–1024 generated repositories. It exercises explicit per-device write
 consent, concurrent connection, ordinary publication/fast-forward, dirty-work
 preservation, the unchanged five-minute round delay and a cold offline restart
-with byte-identical encrypted pending operations. Start a fresh 3600-second
+with byte-identical encrypted pending operations. Start a fresh 14400-second
 Server fixture after precompiling for the full run. Its generated loopback
 repository metadata does not qualify GitHub discovery or provider rate limits;
 the fixed-origin GitHub acceptance remains separate. Only the test executable
