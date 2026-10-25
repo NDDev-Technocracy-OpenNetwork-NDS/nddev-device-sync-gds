@@ -183,4 +183,10 @@ the fixed-origin GitHub acceptance remains separate. Only the test executable
 contains the fixture transport and workspace selectors. No installed runtime,
 personal credential store or existing checkout is used.
 
+Each round must produce a fresh terminal observation for every connection;
+temporary admission/dependency refusals remain explicit in the receipt. Every
+clean fixture repository must produce a successful in-scope result during the
+run, and each round verifies the expected existing commit and dirty refusal.
+Historical test coverage is separate from each repository's latest outcome.
+
 Release journals live in [GitHub Releases](https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-gds/releases).
