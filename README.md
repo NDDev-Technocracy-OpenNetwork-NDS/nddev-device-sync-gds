@@ -63,8 +63,9 @@ explicit refusals. It creates no commits, force updates, resets or rebases.
 
 Git uses the caller's protected credential through a scoped HTTPS header outside
 argv, with no ambient Git configuration, credential helper or terminal prompt.
-Submodules, filters, included configuration, custom hooks and transport overrides are
-refused. Required caller revalidation covers every command and completion;
+Unqualified submodules, filters, included configuration, custom hooks and transport overrides
+are refused. Initialized unchanged-pin children follow the bounded profile below.
+Required caller revalidation covers every command and completion;
 cancellation, output and operation time are bounded by the existing ProcessIo.
 Local Git inspections receive no credential and cannot start a network transport.
 Raw paths, refs, command output and credentials are not telemetry fields.
@@ -74,6 +75,17 @@ preservation, checkout locking, cancellation and server-side hook refusal.
 These checks establish local Git behavior; they do not establish positive
 GitHub credentials or Mac/Windows runtime acceptance. Relocation remains a separate explicit owner decision. The default status-only
 profile and its read-only descriptor remain unchanged.
+
+The explicit `GitHub commit acceptance` workflow runs only from this repository's
+trusted `main` on a public hosted runner. It compiles the test before lending an
+ephemeral, repository-scoped Actions credential, then exercises fixed-route
+repository metadata, two real clones, bidirectional existing-commit publication,
+fast-forward and dirty-work preservation. It owns one generated temporary branch
+and confirms its conditional deletion; an unknown writer or creation outcome is
+preserved for inspection. No personal token, extra repository or long-lived
+credential is required. This qualifies Git provider access separately from the
+user `/user` catalog and Accounts/Vault composition, which require their own
+authorized fixtures. The ordinary test suite keeps this case opt-in.
 
 The opt-in `catalog-runtime` feature is the shared catalog composition used by
 GUI and CLI. It retains independent foreground and background cursors over the
