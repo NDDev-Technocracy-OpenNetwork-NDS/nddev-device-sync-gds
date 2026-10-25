@@ -1,0 +1,43 @@
+name: GitHub commit acceptance
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-commit-acceptance
+  cancel-in-progress: false
+
+jobs:
+  github-commits:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.99.1 --profile minimal
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.15.1'
+      - name: Check fixture authority guards
+        run: python3 -B -m unittest discover -s scripts -p test_github_commits.py
+      - name: Compile acceptance before lending its credential
+        run: cargo test --locked --features github-catalog,commit-sync --test github_commits --no-run --message-format=json > "$RUNNER_TEMP/nds-github-test.jsonl"
+      - name: Qualify actual GitHub metadata and existing commits
+        run: python3 scripts/check-github-commits.py run "$RUNNER_TEMP/nds-github-test.jsonl"
+        env:
+          NDS_GDS_ACCEPTANCE_TOKEN: ${{ github.token }}
+          NDS_GDS_REPOSITORY_ID: ${{ github.repository_id }}
+          NDS_GDS_OWNER_ID: ${{ github.repository_owner_id }}
+      - name: Confirm owned branch cleanup
+        if: always()
+        run: python3 scripts/check-github-commits.py cleanup "$RUNNER_TEMP/nds-github-test.jsonl"
+        env:
+          NDS_GDS_ACCEPTANCE_TOKEN: ${{ github.token }}
