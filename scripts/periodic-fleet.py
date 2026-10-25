@@ -116,7 +116,15 @@ def qualify(args, receipt):
     executables = [x["executable"] for x in artifacts if x.get("reason") == "compiler-artifact"
                    and x.get("executable") and x.get("profile", {}).get("test")]
     assert len(executables) == 1
-    executable = executables[0]
+    # Both process epochs must execute the same qualified bytes, independently
+    # of subsequent Cargo builds or managed-cache retirement.
+    staged = args.output / "native-fleet-member"
+    with Path(executables[0]).open("rb") as source_binary, staged.open("xb") as target_binary:
+        shutil.copyfileobj(source_binary, target_binary, length=1024 * 1024)
+    staged.chmod(0o500)
+    with staged.open("rb") as binary:
+        executable_sha256 = hashlib.file_digest(binary, "sha256").hexdigest()
+    executable = str(staged)
     deadline = time.monotonic() + min(14300, receipt["expires_at_unix"] - time.time() - 10)
     if full:
         assert deadline - time.monotonic() >= 14000, "Start a fresh 14400-second fixture after precompiling"
@@ -410,8 +418,12 @@ def qualify(args, receipt):
             all_clients("stop")
             for process in processes:
                 assert process.wait(timeout=15) == 0
+            with staged.open("rb") as binary:
+                assert hashlib.file_digest(binary, "sha256").hexdigest() == executable_sha256
             proof = {
                 "source": source, "dirty_source": dirty, "clients": args.clients,
+                "native_executable": staged.name,
+                "native_executable_sha256": executable_sha256,
                 "repositories": args.repositories, "distinct_devices": len(identities),
                 "scope": "Actual elected Rust GDS/Vault lifetimes, isolated native credentials, "
                          "genuine session, SQLite, NDS HTTP/PostgreSQL and Git. Generated loopback "
