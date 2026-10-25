@@ -38,6 +38,11 @@ pub struct GitWorkspace {
     fixture_remote: Option<String>,
 }
 impl GitWorkspace {
+    #[cfg(all(test, target_os = "linux", feature = "catalog-runtime"))]
+    pub(crate) fn with_fixture_remote(mut self, remote: String) -> Self {
+        self.fixture_remote = Some(remote);
+        self
+    }
     pub fn new(
         io: ProcessIo,
         git: PathBuf,
@@ -221,7 +226,8 @@ impl GitWorkspace {
             }.await;
             nddev_device_sync_telemetry::finish_operation_span(&tracing::Span::current(), nddev_device_sync_domain::modules::query_outcome(&result).terminal_failure());
             match &result {
-                Ok(outcome) => tracing::info!(event.name="gds.commits.completed", module="gds", scope="io", outcome=?outcome),
+                Ok(CommitOutcome::Blocked(_)) => tracing::info!(event.name="gds.commits.completed", module="gds", scope="io", outcome="rejected", error.type="git_sync_blocked"),
+                Ok(_) => tracing::info!(event.name="gds.commits.completed", module="gds", scope="io", outcome="ok"),
                 Err(error) => tracing::warn!(event.name="gds.commits.failed", module="gds", scope="io", error.type=%error, outcome="error"),
             }
             result
@@ -368,7 +374,7 @@ where
                 arguments[0],
                 String::from_utf8_lossy(&result.stderr)
             );
-            tracing::warn!(event.name="gds.git.failed",module="gds",scope="io",git.operation=arguments[0],status=result.status.code(),error.type="git_exit",outcome="error");
+            tracing::warn!(event.name="gds.git.failed",module="gds",scope="io",error.type="git_exit",outcome="error");
             return Err(ModuleError::ProviderFailed);
         }
         Ok(result.stdout)

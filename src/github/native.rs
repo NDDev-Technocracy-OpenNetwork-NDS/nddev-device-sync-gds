@@ -11,7 +11,7 @@ pub(super) struct Client {
 }
 impl Client {
     #[cfg(test)]
-    fn fixture(origin: String) -> Self {
+    pub(super) fn fixture(origin: String) -> Self {
         let mut client = Self::new().unwrap();
         client.origin = Some(origin);
         client

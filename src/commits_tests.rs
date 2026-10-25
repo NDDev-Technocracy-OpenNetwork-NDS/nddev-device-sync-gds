@@ -61,6 +61,82 @@ fn commit(directory: &Path, name: &str, body: &str) -> String {
     git(directory, &["rev-parse", "HEAD"])
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn real_git_outcomes_satisfy_the_telemetry_contract() {
+    const CHILD: &str = "NDS_GDS_GIT_TELEMETRY_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let result = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "commits::tests::real_git_outcomes_satisfy_the_telemetry_contract",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "isolated Git telemetry acceptance failed: {}",
+            String::from_utf8_lossy(&result.stdout)
+        );
+        return;
+    }
+    let mut logger = nddev_device_sync_telemetry::install(nddev_device_sync_telemetry::Config {
+        service: "nds-git-telemetry-acceptance".into(),
+        version: env!("CARGO_PKG_VERSION").into(),
+        repository: "NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-gds".into(),
+        commit: "unknown".into(),
+        channel: "alpha".into(),
+        standards: "unreleased".into(),
+        environment: "development".into(),
+        target_prefixes: vec!["nddev_device_sync_gds".into()],
+        default_module: "gds".into(),
+        debug: None,
+    })
+    .unwrap();
+    let fixture = Fixture::new();
+    assert_eq!(
+        fixture.synchronize(&fixture.first).await.unwrap(),
+        CommitOutcome::UpToDate
+    );
+    let body = std::fs::read(fixture.first.join("initial.txt")).unwrap();
+    std::fs::write(fixture.first.join("initial.txt"), "generated dirty work").unwrap();
+    assert_eq!(
+        fixture.synchronize(&fixture.first).await.unwrap(),
+        CommitOutcome::Blocked(SyncBlock::Dirty)
+    );
+    std::fs::write(fixture.first.join("initial.txt"), body).unwrap();
+    commit(&fixture.first, "telemetry.txt", "generated existing commit");
+    assert_eq!(
+        fixture.synchronize(&fixture.first).await.unwrap(),
+        CommitOutcome::Published
+    );
+    assert_eq!(
+        fixture.synchronize(&fixture.second).await.unwrap(),
+        CommitOutcome::FastForwarded
+    );
+    use std::os::unix::fs::PermissionsExt;
+    let hook = fixture.remote.join("hooks/pre-receive");
+    std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o700)).unwrap();
+    commit(&fixture.second, "refused.txt", "generated refused commit");
+    assert!(fixture.synchronize(&fixture.second).await.is_err());
+    let rejected = logger.control.rejected_fields_or_events();
+    logger.shutdown();
+    assert_eq!(rejected, 0);
+    let health = logger.control.output_health();
+    assert_eq!(
+        (
+            health.pending_events,
+            health.dropped_events,
+            health.write_failures
+        ),
+        (0, 0, 0)
+    );
+    assert!(!health.shutdown_incomplete);
+}
+
 #[test]
 fn native_cycle_future_is_send_for_the_existing_owned_background_task() {
     fn require_send<T: std::future::Future + Send>(_: T) {}
