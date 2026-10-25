@@ -31,6 +31,30 @@ impl CatalogClient {
         let guard = self
             .capture_use(&flight, &source, write_permissions(), caller, None)
             .await?;
+        guard.validate().await?;
+        {
+            let mut progress = self
+                .shared
+                .commits
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            // Keep the original scope witness. Replacing it with a fresh read
+            // would silently rebind old results after a same-ID coalesced edit.
+            progress
+                .guard
+                .get_or_insert_with(|| Arc::new(guard.clone()));
+            if let Some(epoch) = progress.epoch.clone() {
+                progress.record(
+                    &epoch,
+                    location.repository_id.value().to_string(),
+                    GithubCommitSyncView {
+                        outcome: "running".into(),
+                        reason: String::new(),
+                        observed_at_ms: None,
+                    },
+                );
+            }
+        }
         let current = self
             .vault
             .repository_connection(location.repository_id)
