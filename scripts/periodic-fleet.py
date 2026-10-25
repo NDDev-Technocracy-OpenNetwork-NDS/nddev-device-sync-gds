@@ -121,6 +121,7 @@ def qualify(args, receipt):
     if full:
         assert deadline - time.monotonic() >= 14000, "Start a fresh 14400-second fixture after precompiling"
     processes, connections, history, identities = [], {}, [], {}
+    rounds = []
 
     def check():
         if time.monotonic() > deadline:
@@ -160,6 +161,20 @@ def qualify(args, receipt):
         result = [read(connections[index]) for index in range(args.clients)]
         event(action, clients=args.clients)
         return result
+
+    def qualify_round(boundary, head):
+        results = all_clients("wait", after_ms=boundary, head=head)
+        for result in results:
+            assert result["observed"] == args.repositories
+            assert result["head"] == head and result["dirty_preserved"]
+            assert result["dirty_refusal_observed"]
+            successful = result["successful_repository_ids"]
+            assert len(set(successful)) == len(successful)
+            assert set(successful) <= set(range(2, args.repositories + 1))
+            assert 2 in successful
+            assert sum(result["terminal_outcomes"].values()) == args.repositories
+        rounds.append(results)
+        (args.output / "rounds.json").write_text(json.dumps(rounds, indent=2) + "\n")
 
     def mode(value):
         Path(receipt["control_file"]).write_text(json.dumps({"mode": value}))
@@ -337,12 +352,12 @@ def qualify(args, receipt):
                 assert read(connections[index])["started"]
             canaries = all_clients("canary")
             assert all(value["acknowledged"] for value in canaries)
-            all_clients("wait", after_ms=boundary, head=head)
+            qualify_round(boundary, head)
             assert dirty_witnesses() == dirty_before
             # A second complete observation uses the production 300-second round
             # delay; no queue clock, retry or per-device allowance is changed.
             boundary = time.time_ns() // 1_000_000
-            all_clients("wait", after_ms=boundary, head=head)
+            qualify_round(boundary, head)
             assert dirty_witnesses() == dirty_before
             event("periodic_round_qualified", repositories=args.repositories)
             mode("offline")
@@ -379,8 +394,19 @@ def qualify(args, receipt):
             for index in range(args.clients):
                 if index != publisher:
                     assert read(connections[index])["started"]
-            all_clients("wait", after_ms=boundary, head=head)
+            qualify_round(boundary, head)
             assert dirty_witnesses() == dirty_before
+            successful = [set().union(*(set(values[index]["successful_repository_ids"])
+                                        for values in rounds)) for index in range(args.clients)]
+            assert all(ids == set(range(2, args.repositories + 1)) for ids in successful), \
+                "A clean fixture repository never produced a successful in-scope completion"
+            round_outcomes = []
+            for values in rounds:
+                outcomes = {}
+                for value in values:
+                    for outcome, count in value["terminal_outcomes"].items():
+                        outcomes[outcome] = outcomes.get(outcome, 0) + count
+                round_outcomes.append(outcomes)
             all_clients("stop")
             for process in processes:
                 assert process.wait(timeout=15) == 0
@@ -393,6 +419,8 @@ def qualify(args, receipt):
                 "phases": history, "last_existing_commit": head,
                 "connection_rows_per_replica": connection_rows,
                 "concurrent_vault_canaries": canaries,
+                "round_terminal_outcomes": round_outcomes,
+                "successful_repositories_per_device": [len(ids) for ids in successful],
                 "dirty_witnesses": dirty_before,
                 "encrypted_pending_originals_preserved": True}
         finally:
