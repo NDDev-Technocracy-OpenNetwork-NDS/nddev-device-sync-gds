@@ -163,6 +163,13 @@ successful synchronization. Observations are bounded to1024 repositories and
 are not additional replicated entities. Positive user-catalog access requires
 its own authorized isolated user-account fixture.
 
+Temporary proof-validation failures retain the exact original witness and
+traversal progress. They admit no further Git operation or successful outcome;
+saved views still validate that witness before exposing progress. Known scope
+changes continue to discard it. `--guard-contention` additionally checks both
+validation boundaries against a real SQLite write lock and verifies that an
+actual module disable still clears the scope.
+
 The opt-in Linux `scripts/periodic-fleet.py` accepts an owned Server
 `--fixture-sync3` receipt and a new output directory outside this repository.
 It drives 2–32 separate Rust processes, native Secret Services and replicas,
