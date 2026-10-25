@@ -1,5 +1,5 @@
 //! Existing commits for an already connected checkout. No clone or registration.
-use super::connection::{fresh_repository, operation_error};
+use super::connection::{fresh_repository, native_workspace, operation_error};
 use super::*;
 use nddev_device_sync_application::repositories::commits::CommitOutcome;
 use nddev_device_sync_domain::repositories::workspace::{CheckoutLocation, write_permissions};
@@ -66,12 +66,7 @@ impl CatalogClient {
         let repository =
             fresh_repository(&guard, location, credential.as_str(), cancellation).await?;
         let errors = Arc::new(Mutex::new(None));
-        let workspace =
-            crate::commits::GitWorkspace::default_workspace(self.vault.workspace_principal(), {
-                let guard = guard.clone();
-                let errors = errors.clone();
-                move || revalidation(guard.clone(), errors.clone())
-            })
+        let workspace = native_workspace(&guard, location, errors.clone())
             .await
             .map_err(|error| operation_error(error, &errors))?;
         let result = workspace

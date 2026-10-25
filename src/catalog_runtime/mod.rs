@@ -2,6 +2,8 @@
 //! Vault owns encrypted state and fences, and GDS owns the fixed provider I/O.
 mod consent;
 mod driver;
+#[cfg(all(test, target_os = "linux", feature = "commit-sync"))]
+mod fleet_acceptance;
 mod sync_state;
 pub mod view;
 pub use driver::{CatalogClient, caller_error as classify_error};
@@ -51,6 +53,8 @@ pub(super) struct CatalogResources {
     admission: Arc<tokio::sync::Semaphore>,
     cache: Arc<crate::github::CatalogCache>,
     commits: Mutex<sync_state::CommitState>,
+    #[cfg(all(test, target_os = "linux", feature = "commit-sync"))]
+    fixture: Mutex<Option<Arc<fleet_acceptance::FixtureIo>>>,
 }
 struct WorkSchedule {
     epoch: Option<(Option<String>, Option<String>)>,
@@ -67,6 +71,8 @@ impl CatalogRuntime {
             admission,
             cache,
             commits: Mutex::default(),
+            #[cfg(all(test, target_os = "linux", feature = "commit-sync"))]
+            fixture: Mutex::default(),
         });
         Self {
             identity: identity.clone(),

@@ -77,6 +77,23 @@ pub async fn read_repository(
     cancellation: &CancellationToken,
     mut revalidate: impl AsyncFnMut() -> Result<(), ModuleError>,
 ) -> Result<RepositorySummary, ModuleError> {
+    read_repository_using(
+        shared_client,
+        credential,
+        location,
+        cancellation,
+        &mut revalidate,
+    )
+    .await
+}
+
+async fn read_repository_using<'a>(
+    client: impl FnOnce() -> Result<&'a platform::Client, ModuleError>,
+    credential: &str,
+    location: &CheckoutLocation,
+    cancellation: &CancellationToken,
+    revalidate: &mut impl AsyncFnMut() -> Result<(), ModuleError>,
+) -> Result<RepositorySummary, ModuleError> {
     location.validate()?;
     if credential.is_empty()
         || credential.len() > 8192
@@ -85,7 +102,7 @@ pub async fn read_repository(
         return Err(ModuleError::InvalidInput);
     }
     within_deadline(cancellation, async {
-        let client = shared_client()?;
+        let client = client()?;
         let _admission = client
             .admission
             .try_acquire()
@@ -117,6 +134,43 @@ fn verified_repository(
         return Err(ModuleError::InvalidResponse);
     }
     Ok(repository)
+}
+
+// Only the Linux unit-test executable can supply generated provider metadata.
+// Published libraries retain the fixed GitHub origin and no override API.
+#[cfg(all(
+    test,
+    target_os = "linux",
+    feature = "catalog-runtime",
+    feature = "commit-sync"
+))]
+pub(crate) struct RepositoryFixture(platform::Client);
+#[cfg(all(
+    test,
+    target_os = "linux",
+    feature = "catalog-runtime",
+    feature = "commit-sync"
+))]
+impl RepositoryFixture {
+    pub(crate) fn new(origin: String) -> Self {
+        Self(platform::Client::fixture(origin))
+    }
+    pub(crate) async fn read(
+        &self,
+        credential: &str,
+        location: &CheckoutLocation,
+        cancellation: &CancellationToken,
+        mut revalidate: impl AsyncFnMut() -> Result<(), ModuleError>,
+    ) -> Result<RepositorySummary, ModuleError> {
+        read_repository_using(
+            || Ok(&self.0),
+            credential,
+            location,
+            cancellation,
+            &mut revalidate,
+        )
+        .await
+    }
 }
 async fn observed(
     credential: &str,

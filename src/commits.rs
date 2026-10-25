@@ -38,6 +38,11 @@ pub struct GitWorkspace {
     fixture_remote: Option<String>,
 }
 impl GitWorkspace {
+    #[cfg(all(test, target_os = "linux", feature = "catalog-runtime"))]
+    pub(crate) fn with_fixture_remote(mut self, remote: String) -> Self {
+        self.fixture_remote = Some(remote);
+        self
+    }
     pub fn new(
         io: ProcessIo,
         git: PathBuf,

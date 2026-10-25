@@ -160,7 +160,20 @@ Saved repository views expose this process's running/completed outcome and
 completion time, separately from the saved provider observation. Source,
 consent or owner replacement invalidates that progress; absence is no claim of
 successful synchronization. Observations are bounded to1024 repositories and
-are not additional replicated entities. Positive GitHub access still requires
-an authorized isolated provider fixture.
+are not additional replicated entities. Positive user-catalog access requires
+its own authorized isolated user-account fixture.
+
+The opt-in Linux `scripts/periodic-fleet.py` accepts an owned Server
+`--fixture-sync3` receipt and a new output directory outside this repository.
+It drives 2–32 separate Rust processes, native Secret Services and replicas,
+with 2–1024 generated repositories. It exercises explicit per-device write
+consent, concurrent connection, ordinary publication/fast-forward, dirty-work
+preservation, the unchanged five-minute round delay and a cold offline restart
+with byte-identical encrypted pending operations. Start a fresh 3600-second
+Server fixture after precompiling for the full run. Its generated loopback
+repository metadata does not qualify GitHub discovery or provider rate limits;
+the fixed-origin GitHub acceptance remains separate. Only the test executable
+contains the fixture transport and workspace selectors. No installed runtime,
+personal credential store or existing checkout is used.
 
 Release journals live in [GitHub Releases](https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-gds/releases).
