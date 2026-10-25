@@ -252,6 +252,8 @@ impl CatalogRuntime {
             .unwrap_or_else(|e| e.into_inner())
             .guard
             .clone();
+        #[cfg(all(test, target_os = "linux", feature = "commit-sync"))]
+        self.pause_fixture_validation(false).await?;
         if let Some(original) = original
             && original.validate().await.is_err()
         {
@@ -341,6 +343,8 @@ impl CatalogRuntime {
             // cannot publish a running/success observation under another scope.
             return Ok(true);
         };
+        #[cfg(all(test, target_os = "linux", feature = "commit-sync"))]
+        self.pause_fixture_validation(true).await?;
         if original.validate().await.is_err() {
             self.shared
                 .commits
@@ -386,6 +390,15 @@ impl CatalogRuntime {
             },
         );
         Ok(true)
+    }
+
+    #[cfg(all(test, target_os = "linux", feature = "commit-sync"))]
+    async fn pause_fixture_validation(&self, after: bool) -> Result<(), view::GithubCatalogError> {
+        let fixture = self.shared.fixture.lock().unwrap().clone();
+        if let Some(fixture) = fixture {
+            fixture.pause_validation(after).await?;
+        }
+        Ok(())
     }
 }
 

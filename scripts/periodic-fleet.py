@@ -83,6 +83,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--clients", type=int, choices=range(2, 33), default=32, metavar="2..32")
     parser.add_argument("--repositories", type=int, choices=range(2, 1025), default=1024, metavar="2..1024")
+    parser.add_argument("--guard-contention", action="store_true", help="Also exercise real SQLite admission pressure against the original proof")
     args = parser.parse_args()
     assert sys.platform == "linux"
     assert args.fixture.is_absolute() and args.fixture.is_file()
@@ -306,6 +307,13 @@ def qualify(args, receipt):
                 assert rows == args.repositories, f"Unexpected connection-intent count: {rows}"
                 connection_rows.append(rows)
             all_clients("edit")
+            if args.guard_contention:
+                files = list((base / "0/replica").rglob("*.db"))
+                assert len(files) == 1
+                send(0, "guard-contention", database=str(files[0]))
+                facts = read(connections[0])
+                (args.output / "guard-contention.json").write_text(json.dumps(facts, indent=2) + "\n")
+                assert facts["passed"], "Original proof/cursor was lost during real native admission pressure"
             def dirty_witnesses():
                 witnesses = []
                 for index in range(args.clients):
