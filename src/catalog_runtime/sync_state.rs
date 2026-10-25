@@ -31,6 +31,11 @@ impl Default for CommitState {
     }
 }
 impl CommitState {
+    #[cfg(all(test, target_os = "linux", feature = "commit-sync"))]
+    pub(super) fn recorded(&self) -> &BTreeMap<String, GithubCommitSyncView> {
+        &self.observations
+    }
+
     pub fn reset(&mut self, epoch: Epoch) {
         if self.epoch.as_ref() != Some(&epoch) {
             *self = Self {

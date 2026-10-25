@@ -589,65 +589,59 @@ async fn run_member() -> Result<()> {
                             .as_str()
                             .ok_or("missing expected existing commit")?;
                         let mut reported = std::time::Instant::now() - Duration::from_secs(10);
-                        loop {
-                            if reported.elapsed() >= Duration::from_secs(10) {
+                        let mut successful = std::collections::BTreeSet::new();
+                        let mut dirty_refusal = false;
+                        let mut witness = None;
+                        let terminal_outcomes = loop {
+                            let (completed, outcomes) = {
                                 let state = runtime.shared.commits.lock().unwrap();
-                                let mut outcomes = std::collections::BTreeMap::<String, usize>::new();
-                                if let Some(epoch) = &state.epoch {
-                                    for id in 1..=repositories {
-                                        if let Some(view) = state.observation(epoch, &id.to_string()) {
-                                            *outcomes.entry(format!("{}:{}", view.outcome, view.reason)).or_default() += 1;
-                                        }
+                                if let Some(original) = &witness {
+                                    if !state.guard.as_ref().is_some_and(|current| Arc::ptr_eq(original, current)) {
+                                        return Err("original fleet scope changed during observation".into());
                                     }
+                                } else {
+                                    witness = state.guard.clone();
                                 }
-                                eprintln!("{}", json!({"fleet_progress": outcomes, "repositories": repositories}));
+                                let mut outcomes = std::collections::BTreeMap::<String, usize>::new();
+                                let mut observed = 0;
+                                for (id, view) in state.recorded() {
+                                    let id: usize = id.parse()?;
+                                    assert!((1..=repositories).contains(&id));
+                                    if !view.observed_at_ms.as_deref().and_then(|s| s.parse::<u64>().ok()).is_some_and(|at| at >= minimum) {
+                                        continue;
+                                    }
+                                    let expected_result = if id == 1 {
+                                        view.outcome == "blocked" && view.reason == "dirty"
+                                    } else {
+                                        matches!(view.outcome.as_str(), "up_to_date" | "published" | "fast_forwarded")
+                                    };
+                                    let temporary = view.outcome == "refused" && matches!(view.reason.as_str(), "operation_busy" | "operation_timeout" | "dependency_unavailable");
+                                    if !expected_result && !temporary {
+                                        return Err("unexpected fleet terminal outcome".into());
+                                    }
+                                    if expected_result {
+                                        if id == 1 { dirty_refusal = true; } else { successful.insert(id); }
+                                    }
+                                    *outcomes.entry(format!("{}:{}", view.outcome, view.reason)).or_default() += 1;
+                                    observed += 1;
+                                }
+                                (observed == repositories, outcomes)
+                            };
+                            if reported.elapsed() >= Duration::from_secs(10) {
+                                eprintln!("{}", json!({"fleet_progress":outcomes,"repositories":repositories,"successful_observed":successful.len()}));
                                 reported = std::time::Instant::now();
                             }
-                            let completed = {
-                                let state = runtime.shared.commits.lock().unwrap();
-                                state.epoch.as_ref().is_some_and(|epoch| {
-                                    (1..=repositories).all(|id| {
-                                        state.observation(epoch, &id.to_string()).is_some_and(
-                                            |view| {
-                                                view.observed_at_ms
-                                                    .as_deref()
-                                                    .and_then(|s| s.parse::<u64>().ok())
-                                                    .is_some_and(|at| at >= minimum)
-                                                    && if id == 1 {
-                                                        view.outcome == "blocked"
-                                                            && view.reason == "dirty"
-                                                    } else {
-                                                        matches!(
-                                                            view.outcome.as_str(),
-                                                            "up_to_date"
-                                                                | "published"
-                                                                | "fast_forwarded"
-                                                        )
-                                                    }
-                                            },
-                                        )
-                                    })
-                                })
-                            };
-                            if completed
-                                && git(
-                                    &io.root.join(location(2).relative_path()),
-                                    &["rev-parse", "HEAD"],
-                                )? == expected
+                            if completed && dirty_refusal && successful.contains(&2)
+                                && git(&io.root.join(location(2).relative_path()), &["rev-parse", "HEAD"])? == expected
                             {
-                                assert_eq!(
-                                    std::fs::read_to_string(
-                                        io.root
-                                            .join(location(1).relative_path())
-                                            .join("initial.txt")
-                                    )?,
-                                    format!("generated dirty work {index}\n")
-                                );
-                                break;
+                                assert_eq!(std::fs::read_to_string(io.root.join(location(1).relative_path()).join("initial.txt"))?, format!("generated dirty work {index}\n"));
+                                break outcomes;
                             }
-                            tokio::time::sleep(Duration::from_millis(200)).await;
-                        }
-                        Ok(json!({"observed":repositories,"head":expected,"dirty_preserved":true}))
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                        };
+                        Ok(json!({"observed":repositories,"head":expected,"dirty_preserved":true,
+                            "dirty_refusal_observed":dirty_refusal,"successful_repository_ids":successful,
+                            "terminal_outcomes":terminal_outcomes}))
                     }
                     "offline" => {
                         vault
