@@ -30,12 +30,42 @@ use zeroize::Zeroizing;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
+#[path = "guard_acceptance.rs"]
+mod guard_acceptance;
+
+pub(super) struct ValidationPause {
+    after: bool,
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
 pub(super) struct FixtureIo {
     pub provider: crate::github::RepositoryFixture,
     root: PathBuf,
     remotes: PathBuf,
+    validation_pause: Mutex<Option<Arc<ValidationPause>>>,
 }
 impl FixtureIo {
+    pub(super) async fn pause_validation(
+        &self,
+        after: bool,
+    ) -> std::result::Result<(), view::GithubCatalogError> {
+        let pause = {
+            let mut slot = self.validation_pause.lock().unwrap();
+            if slot.as_ref().is_some_and(|p| p.after == after) {
+                slot.take()
+            } else {
+                None
+            }
+        };
+        if let Some(pause) = pause {
+            pause.entered.notify_one();
+            tokio::time::timeout(Duration::from_secs(20), pause.release.notified())
+                .await
+                .map_err(|_| view::GithubCatalogError::Timeout)?;
+        }
+        Ok(())
+    }
     pub fn workspace(
         &self,
         principal: WorkspacePrincipal,
@@ -414,6 +444,7 @@ async fn run_member() -> Result<()> {
         provider: crate::github::RepositoryFixture::new(std::env::var("NDS_GIT_FLEET_PROVIDER")?),
         root: workspace,
         remotes: PathBuf::from(std::env::var("NDS_GIT_FLEET_REMOTES")?).canonicalize()?,
+        validation_pause: Mutex::new(None),
     });
     let view = identity.view();
     reply(
@@ -482,6 +513,13 @@ async fn run_member() -> Result<()> {
                             format!("generated dirty work {index}\n"),
                         )?;
                         Ok(json!({"dirty":true}))
+                    }
+                    "guard-contention" => {
+                        assert!(owner.is_none());
+                        let database = PathBuf::from(command["database"].as_str().ok_or("missing owned database")?).canonicalize()?;
+                        assert!(database.starts_with(root.join("replica").canonicalize()?));
+                        assert!(database.is_file() && database.extension().is_some_and(|e| e=="db"));
+                        guard_acceptance::probe(identity.clone(), vault.clone(), io.clone(), database).await
                     }
                     "commit" => {
                         let path = io.root.join(location(2).relative_path());

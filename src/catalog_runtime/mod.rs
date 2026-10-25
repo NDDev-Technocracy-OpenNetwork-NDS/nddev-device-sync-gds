@@ -31,6 +31,11 @@ pub fn workspace_supported() -> bool {
     ))
 }
 
+fn retryable_validation(error: view::GithubCatalogError) -> bool {
+    use view::GithubCatalogError::*;
+    matches!(error, Busy | Timeout | Unavailable)
+}
+
 pub(super) type Observations = Arc<Mutex<Option<Observed>>>;
 pub(super) struct Observed {
     pub epoch: (Option<String>, Option<String>),
@@ -252,9 +257,16 @@ impl CatalogRuntime {
             .unwrap_or_else(|e| e.into_inner())
             .guard
             .clone();
+        #[cfg(all(test, target_os = "linux", feature = "commit-sync"))]
+        self.pause_fixture_validation(false).await?;
         if let Some(original) = original
-            && original.validate().await.is_err()
+            && let Err(error) = original.validate().await
         {
+            // An unavailable proof is not evidence of a changed scope. Keep
+            // its exact witness and cursor, but admit no new Git operation.
+            if retryable_validation(error) {
+                return Err(error);
+            }
             self.shared
                 .commits
                 .lock()
@@ -341,14 +353,24 @@ impl CatalogRuntime {
             // cannot publish a running/success observation under another scope.
             return Ok(true);
         };
-        if original.validate().await.is_err() {
-            self.shared
-                .commits
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .cancel();
-            return Err(GithubCatalogError::Cancelled);
-        }
+        #[cfg(all(test, target_os = "linux", feature = "commit-sync"))]
+        self.pause_fixture_validation(true).await?;
+        let validation_error = match original.validate().await {
+            Ok(()) => None,
+            Err(error) if retryable_validation(error) => Some(error),
+            Err(_) => {
+                self.shared
+                    .commits
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .cancel();
+                return Err(GithubCatalogError::Cancelled);
+            }
+        };
+        // A completed operation cannot report success while its original proof
+        // is unavailable. Record the refusal without discarding prior progress;
+        // saved presentation still revalidates this exact witness before use.
+        let result = validation_error.map_or(result, Err);
         use nddev_device_sync_application::repositories::commits::CommitOutcome;
         let (outcome, reason) = match result {
             Ok(CommitOutcome::UpToDate) => ("up_to_date", String::new()),
@@ -385,7 +407,16 @@ impl CatalogRuntime {
                 observed_at_ms: crate::github::now_ms().ok().map(|v| v.to_string()),
             },
         );
-        Ok(true)
+        validation_error.map_or(Ok(true), Err)
+    }
+
+    #[cfg(all(test, target_os = "linux", feature = "commit-sync"))]
+    async fn pause_fixture_validation(&self, after: bool) -> Result<(), view::GithubCatalogError> {
+        let fixture = self.shared.fixture.lock().unwrap().clone();
+        if let Some(fixture) = fixture {
+            fixture.pause_validation(after).await?;
+        }
+        Ok(())
     }
 }
 
