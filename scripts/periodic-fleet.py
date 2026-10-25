@@ -172,6 +172,10 @@ def qualify(args, receipt):
         raise TimeoutError("Owned NDS fixture did not change mode")
 
     class Metadata(http.server.BaseHTTPRequestHandler):
+        def setup(self):
+            self.request.settimeout(5)
+            super().setup()
+
         def do_GET(self):
             match = re.fullmatch(r"/repos/generated-owner/repository-(\d{4})", self.path)
             if not match or not 1 <= int(match[1]) <= args.repositories:
@@ -194,7 +198,11 @@ def qualify(args, receipt):
         def log_message(self, *_args):
             pass
 
-    provider = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Metadata)
+    class MetadataServer(http.server.ThreadingHTTPServer):
+        request_queue_size = 32
+        daemon_threads = False
+
+    provider = MetadataServer(("127.0.0.1", 0), Metadata)
     thread = threading.Thread(target=provider.serve_forever, daemon=True)
     thread.start()
     scratch = Path.home() / ".local/state"
@@ -214,7 +222,9 @@ def qualify(args, receipt):
             def git(path, *args):
                 return subprocess.check_output(
                     ["git", "-c", "commit.gpgsign=false", "-c", "user.name=NDS generated fleet",
-                     "-c", "user.email=fleet@example.invalid", *args], cwd=path, text=True,
+                     "-c", "user.email=fleet@example.invalid", "-c", "core.hooksPath=/dev/null", *args], cwd=path, text=True,
+                    env=os.environ | {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
+                                      "GIT_TERMINAL_PROMPT": "0"},
                     stderr=subprocess.DEVNULL, timeout=15).strip()
             git(seed, "init", "-q", "-b", "main")
             (seed / "initial.txt").write_text("generated initial content\n")
