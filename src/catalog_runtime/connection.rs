@@ -44,7 +44,7 @@ impl CatalogClient {
         &self,
         location: CheckoutLocation,
     ) -> Result<GithubConnectionView, GithubCatalogError> {
-        use crate::commits::{ConnectionOutcome, GitWorkspace};
+        use crate::commits::ConnectionOutcome;
         use nddev_device_sync_domain::repositories::workspace::{
             ConnectionBlock, write_permissions,
         };
@@ -89,13 +89,9 @@ impl CatalogClient {
             return Err(GithubCatalogError::Busy);
         }
         let errors = Arc::new(Mutex::new(None));
-        let workspace = GitWorkspace::default_workspace(self.vault.workspace_principal(), {
-            let guard = guard.clone();
-            let errors = errors.clone();
-            move || revalidation(guard.clone(), errors.clone())
-        })
-        .await
-        .map_err(|error| operation_error(error, &errors))?;
+        let workspace = native_workspace(&guard, &location, errors.clone())
+            .await
+            .map_err(|error| operation_error(error, &errors))?;
         let outcome = workspace
             .connect(
                 &location,
@@ -207,11 +203,21 @@ pub(super) async fn fresh_repository(
 ) -> Result<nddev_device_sync_domain::repositories::catalog::RepositorySummary, GithubCatalogError>
 {
     let errors = Arc::new(Mutex::new(None));
-    let result = crate::github::read_repository(credential, location, cancellation, {
+    let revalidate = {
         let errors = errors.clone();
         let guard = guard.clone();
         move || revalidation(guard.clone(), errors.clone())
-    })
+    };
+    let result = async {
+        #[cfg(all(test, target_os = "linux", feature = "commit-sync"))]
+        if let Some(fixture) = &guard.fixture {
+            return fixture
+                .provider
+                .read(credential, location, cancellation, revalidate)
+                .await;
+        }
+        crate::github::read_repository(credential, location, cancellation, revalidate).await
+    }
     .await;
     if let Some(error) = errors
         .lock()
@@ -222,6 +228,23 @@ pub(super) async fn fresh_repository(
     }
     guard.module.observe(&result);
     result.map_err(Into::into)
+}
+
+#[cfg(all(feature = "commit-sync", any(target_os = "linux", target_os = "macos")))]
+pub(super) async fn native_workspace(
+    guard: &CatalogUseGuard,
+    _location: &CheckoutLocation,
+    errors: Arc<Mutex<Option<GithubCatalogError>>>,
+) -> Result<crate::commits::GitWorkspace, nddev_device_sync_domain::modules::ModuleError> {
+    #[cfg(all(test, target_os = "linux", feature = "commit-sync"))]
+    if let Some(fixture) = &guard.fixture {
+        return fixture.workspace(guard.vault.workspace_principal(), _location);
+    }
+    crate::commits::GitWorkspace::default_workspace(guard.vault.workspace_principal(), {
+        let guard = guard.clone();
+        move || revalidation(guard.clone(), errors.clone())
+    })
+    .await
 }
 
 #[cfg(all(feature = "commit-sync", any(target_os = "linux", target_os = "macos")))]

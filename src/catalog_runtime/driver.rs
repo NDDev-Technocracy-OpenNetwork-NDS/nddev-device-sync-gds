@@ -135,6 +135,13 @@ impl CatalogClient {
             fence,
             cancellation,
             lifetime: flight.lifetime.clone(),
+            #[cfg(all(test, target_os = "linux", feature = "commit-sync"))]
+            fixture: self
+                .shared
+                .fixture
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
         })
     }
 }
@@ -264,6 +271,8 @@ pub(super) struct CatalogUseGuard {
     fence: Arc<LocalUseFence>,
     cancellation: Arc<CancellationToken>,
     lifetime: Arc<CancellationToken>,
+    #[cfg(all(test, target_os = "linux", feature = "commit-sync"))]
+    fixture: Option<Arc<super::fleet_acceptance::FixtureIo>>,
 }
 impl CatalogUseGuard {
     fn check(&self) -> Result<(), GithubCatalogError> {
