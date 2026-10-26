@@ -44,8 +44,57 @@ pub(super) struct FixtureIo {
     root: PathBuf,
     remotes: PathBuf,
     validation_pause: Mutex<Option<Arc<ValidationPause>>>,
+    timings: Mutex<[[u64; 3]; 3]>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum TimingStage {
+    Synchronization,
+    Git,
+    Validation,
+}
+
+/// Inclusive, nested wall times for this test process, including failed calls.
+/// Fixed counters keep progress bounded; they are not qualification criteria.
+pub(super) struct TimingSpan {
+    io: Arc<FixtureIo>,
+    stage: TimingStage,
+    started: std::time::Instant,
+}
+impl Drop for TimingSpan {
+    fn drop(&mut self) {
+        let elapsed = u64::try_from(self.started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        let mut timings = self.io.timings.lock().unwrap();
+        let timing = &mut timings[self.stage as usize];
+        timing[0] = timing[0].saturating_add(1);
+        timing[1] = timing[1].saturating_add(elapsed);
+        timing[2] = timing[2].max(elapsed);
+    }
 }
 impl FixtureIo {
+    pub(super) fn timing(self: &Arc<Self>, stage: TimingStage) -> TimingSpan {
+        TimingSpan {
+            io: self.clone(),
+            stage,
+            started: std::time::Instant::now(),
+        }
+    }
+
+    fn timings(&self) -> Value {
+        let timings = *self.timings.lock().unwrap();
+        let mut result = serde_json::Map::new();
+        for (name, [calls, total_us, max_us]) in ["synchronization", "git", "validation"]
+            .into_iter()
+            .zip(timings)
+        {
+            result.insert(
+                name.into(),
+                json!({"calls":calls,"total_us":total_us,"max_us":max_us}),
+            );
+        }
+        Value::Object(result)
+    }
+
     pub(super) async fn pause_validation(
         &self,
         after: bool,
@@ -445,6 +494,7 @@ async fn run_member() -> Result<()> {
         root: workspace,
         remotes: PathBuf::from(std::env::var("NDS_GIT_FLEET_REMOTES")?).canonicalize()?,
         validation_pause: Mutex::new(None),
+        timings: Mutex::default(),
     });
     let view = identity.view();
     reply(
@@ -628,7 +678,33 @@ async fn run_member() -> Result<()> {
                                 (observed == repositories, outcomes)
                             };
                             if reported.elapsed() >= Duration::from_secs(10) {
-                                eprintln!("{}", json!({"fleet_progress":outcomes,"repositories":repositories,"successful_observed":successful.len()}));
+                                let diagnostics = {
+                                    let state = runtime.shared.commits.lock().unwrap();
+                                    let mut absent = Vec::new();
+                                    let mut running = Vec::new();
+                                    let mut stale = Vec::new();
+                                    for id in 1..=repositories {
+                                        match state.recorded().get(&id.to_string()) {
+                                            None => absent.push(id),
+                                            Some(view) => match view.observed_at_ms.as_deref().and_then(|s| s.parse::<u64>().ok()) {
+                                                None => running.push(id),
+                                                Some(at) if at < minimum => stale.push(id),
+                                                Some(_) => {},
+                                            },
+                                        }
+                                    }
+                                    json!({
+                                        "recorded":state.recorded().len(),
+                                        "absent_count":absent.len(),"absent_sample":absent.into_iter().take(16).collect::<Vec<_>>(),
+                                        "running_count":running.len(),"running_sample":running.into_iter().take(16).collect::<Vec<_>>(),
+                                        "stale_count":stale.len(),"stale_sample":stale.into_iter().take(16).collect::<Vec<_>>(),
+                                        "queued":state.queue.len(),"page_end":state.end,"cursor_present":!state.after.is_empty(),
+                                        "round_delay_ms":state.next.map(|next|next.saturating_duration_since(nddev_device_sync_accounts::runtime::Instant::now()).as_millis()),
+                                        "target_succeeded":successful.contains(&2),
+                                        "target":state.recorded().get("2").map(|view|json!({"outcome":view.outcome,"reason":view.reason,"observed_at_ms":view.observed_at_ms})),
+                                    })
+                                };
+                                eprintln!("{}", json!({"fleet_progress":outcomes,"repositories":repositories,"successful_observed":successful.len(),"diagnostics":diagnostics,"inclusive_timings":io.timings()}));
                                 reported = std::time::Instant::now();
                             }
                             if completed && dirty_refusal && successful.contains(&2)
@@ -639,9 +715,14 @@ async fn run_member() -> Result<()> {
                             }
                             tokio::time::sleep(Duration::from_millis(500)).await;
                         };
-                        Ok(json!({"observed":repositories,"head":expected,"dirty_preserved":true,
+                        let facts = json!({"observed":repositories,"head":expected,"dirty_preserved":true,
                             "dirty_refusal_observed":dirty_refusal,"successful_repository_ids":successful,
-                            "terminal_outcomes":terminal_outcomes}))
+                            "terminal_outcomes":terminal_outcomes});
+                        // Preserve a completed member observation if another
+                        // member later fails. Only the final fleet receipt
+                        // establishes whole-profile qualification.
+                        eprintln!("{}",json!({"fleet_member_round":&facts}));
+                        Ok(facts)
                     }
                     "offline" => {
                         vault

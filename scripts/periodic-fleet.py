@@ -166,7 +166,18 @@ def qualify(args, receipt):
     def all_clients(action, **facts):
         for index in range(args.clients):
             send(index, action, **facts)
-        result = [read(connections[index]) for index in range(args.clients)]
+        result = []
+        for index in range(args.clients):
+            result.append(read(connections[index]))
+            if action == "wait":
+                # Raw replies are diagnostic, not a qualified round or fleet.
+                # Keep received members if a later control channel closes.
+                partial = args.output / "round-replies.pending"
+                partial.write_text(json.dumps({"round": len(rounds) + 1,
+                    "received_clients": len(result), "total_clients": args.clients,
+                    "fleet_qualified": False, "member_replies": result}) + "\n")
+                partial.chmod(0o600)
+                partial.replace(args.output / "round-replies.json")
         event(action, clients=args.clients)
         return result
 
