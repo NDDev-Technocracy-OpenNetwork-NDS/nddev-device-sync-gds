@@ -286,6 +286,11 @@ impl CatalogUseGuard {
         }
     }
     pub(super) async fn validate(&self) -> Result<(), GithubCatalogError> {
+        #[cfg(all(test, target_os = "linux", feature = "commit-sync"))]
+        let _timing = self
+            .fixture
+            .as_ref()
+            .map(|io| io.timing(super::fleet_acceptance::TimingStage::Validation));
         self.module.validate().await?;
         self.check()?;
         self.identity.validate_local_use(&self.fence).await?;

@@ -44,8 +44,57 @@ pub(super) struct FixtureIo {
     root: PathBuf,
     remotes: PathBuf,
     validation_pause: Mutex<Option<Arc<ValidationPause>>>,
+    timings: Mutex<[[u64; 3]; 3]>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum TimingStage {
+    Synchronization,
+    Git,
+    Validation,
+}
+
+/// Inclusive, nested wall times for this test process, including failed calls.
+/// Fixed counters keep progress bounded; they are not qualification criteria.
+pub(super) struct TimingSpan {
+    io: Arc<FixtureIo>,
+    stage: TimingStage,
+    started: std::time::Instant,
+}
+impl Drop for TimingSpan {
+    fn drop(&mut self) {
+        let elapsed = u64::try_from(self.started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        let mut timings = self.io.timings.lock().unwrap();
+        let timing = &mut timings[self.stage as usize];
+        timing[0] = timing[0].saturating_add(1);
+        timing[1] = timing[1].saturating_add(elapsed);
+        timing[2] = timing[2].max(elapsed);
+    }
 }
 impl FixtureIo {
+    pub(super) fn timing(self: &Arc<Self>, stage: TimingStage) -> TimingSpan {
+        TimingSpan {
+            io: self.clone(),
+            stage,
+            started: std::time::Instant::now(),
+        }
+    }
+
+    fn timings(&self) -> Value {
+        let timings = *self.timings.lock().unwrap();
+        let mut result = serde_json::Map::new();
+        for (name, [calls, total_us, max_us]) in ["synchronization", "git", "validation"]
+            .into_iter()
+            .zip(timings)
+        {
+            result.insert(
+                name.into(),
+                json!({"calls":calls,"total_us":total_us,"max_us":max_us}),
+            );
+        }
+        Value::Object(result)
+    }
+
     pub(super) async fn pause_validation(
         &self,
         after: bool,
@@ -445,6 +494,7 @@ async fn run_member() -> Result<()> {
         root: workspace,
         remotes: PathBuf::from(std::env::var("NDS_GIT_FLEET_REMOTES")?).canonicalize()?,
         validation_pause: Mutex::new(None),
+        timings: Mutex::default(),
     });
     let view = identity.view();
     reply(
@@ -654,7 +704,7 @@ async fn run_member() -> Result<()> {
                                         "target":state.recorded().get("2").map(|view|json!({"outcome":view.outcome,"reason":view.reason,"observed_at_ms":view.observed_at_ms})),
                                     })
                                 };
-                                eprintln!("{}", json!({"fleet_progress":outcomes,"repositories":repositories,"successful_observed":successful.len(),"diagnostics":diagnostics}));
+                                eprintln!("{}", json!({"fleet_progress":outcomes,"repositories":repositories,"successful_observed":successful.len(),"diagnostics":diagnostics,"inclusive_timings":io.timings()}));
                                 reported = std::time::Instant::now();
                             }
                             if completed && dirty_refusal && successful.contains(&2)

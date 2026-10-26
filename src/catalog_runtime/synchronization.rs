@@ -10,6 +10,12 @@ impl CatalogClient {
         location: &CheckoutLocation,
         cancellation: &CancellationToken,
     ) -> Result<CommitOutcome, GithubCatalogError> {
+        #[cfg(all(test, target_os = "linux", feature = "commit-sync"))]
+        let fixture = self.shared.fixture.lock().unwrap().clone();
+        #[cfg(all(test, target_os = "linux", feature = "commit-sync"))]
+        let _timing = fixture
+            .as_ref()
+            .map(|io| io.timing(super::fleet_acceptance::TimingStage::Synchronization));
         let _admission = self
             .shared
             .admission
@@ -69,6 +75,10 @@ impl CatalogClient {
         let workspace = native_workspace(&guard, location, errors.clone())
             .await
             .map_err(|error| operation_error(error, &errors))?;
+        #[cfg(all(test, target_os = "linux", feature = "commit-sync"))]
+        let git_timing = fixture
+            .as_ref()
+            .map(|io| io.timing(super::fleet_acceptance::TimingStage::Git));
         let result = workspace
             .synchronize(
                 location,
@@ -102,6 +112,8 @@ impl CatalogClient {
             )
             .await
             .map_err(|error| operation_error(error, &errors));
+        #[cfg(all(test, target_os = "linux", feature = "commit-sync"))]
+        drop(git_timing);
         guard.validate().await?;
         if cancellation.is_cancelled() {
             return Err(GithubCatalogError::Cancelled);
