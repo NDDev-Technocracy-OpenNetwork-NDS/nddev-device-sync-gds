@@ -2841,7 +2841,7 @@ checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 [[package]]
 name = "nddev-device-sync-accounts"
 version = "0.0.1-alpha.24"
-source = "git+https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-accounts?rev=599159ba84c36c9e4fa72083521593f46586cc6d#599159ba84c36c9e4fa72083521593f46586cc6d"
+source = "git+https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-accounts?rev=1ce3c9ae30bc85e73731a4826743c2eafe321815#1ce3c9ae30bc85e73731a4826743c2eafe321815"
 dependencies = [
  "android-native-keyring-store",
  "apple-native-keyring-store",
@@ -2911,7 +2911,7 @@ dependencies = [
 [[package]]
 name = "nddev-device-sync-application"
 version = "0.0.1-alpha.21"
-source = "git+https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-core.git?rev=aeb1361867e7180d6de50d18e9fe71fcc072a430#aeb1361867e7180d6de50d18e9fe71fcc072a430"
+source = "git+https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-core.git?rev=238dcec49849712758b6559facce70c2d226b42c#238dcec49849712758b6559facce70c2d226b42c"
 dependencies = [
  "nddev-device-sync-domain",
 ]
@@ -2919,7 +2919,7 @@ dependencies = [
 [[package]]
 name = "nddev-device-sync-domain"
 version = "0.0.12"
-source = "git+https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-core.git?rev=aeb1361867e7180d6de50d18e9fe71fcc072a430#aeb1361867e7180d6de50d18e9fe71fcc072a430"
+source = "git+https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-core.git?rev=238dcec49849712758b6559facce70c2d226b42c#238dcec49849712758b6559facce70c2d226b42c"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -3002,7 +3002,7 @@ dependencies = [
 [[package]]
 name = "nddev-device-sync-vault"
 version = "0.0.1-alpha.12"
-source = "git+https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-vault?rev=ee213b4186f3d50ec6c75828ab64b46be299149a#ee213b4186f3d50ec6c75828ab64b46be299149a"
+source = "git+https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-vault?rev=ce6af7be38bb4ee74e00aa96f0111e341e709727#ce6af7be38bb4ee74e00aa96f0111e341e709727"
 dependencies = [
  "base16ct",
  "base64 0.23.1",
