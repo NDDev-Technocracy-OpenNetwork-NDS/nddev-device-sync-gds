@@ -63,3 +63,9 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Module tests and Linux Rust worker acceptance
         run: cargo test --locked --workspace
+      - name: Lint the native macOS commit-sync adapter
+        if: runner.os == 'macOS'
+        run: cargo clippy --locked --all-targets --features commit-sync -- -D warnings
+      - name: Qualify native macOS Git ownership and preservation
+        if: runner.os == 'macOS'
+        run: cargo test --locked --features commit-sync --lib commits::tests -- --test-threads=2
