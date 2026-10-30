@@ -70,6 +70,20 @@ cancellation, output and operation time are bounded by the existing ProcessIo.
 Local Git inspections receive no credential and cannot start a network transport.
 Raw paths, refs, command output and credentials are not telemetry fields.
 
+Linux/macOS existing-checkout operations retain native handles for the checkout,
+Git directory and local lock. They recheck those exact identities on both sides
+of authorization awaits and before reporting completion. Replacing a directory
+or deleting, replacing or symlinking its lock refuses the cycle; matching binding
+bytes cannot transfer it to the replacement. These local witnesses use the same
+native lock helpers as checkout connection.
+
+The composition owner must retain and poll an admitted Git future through
+cancellation until its actual result returns. A dropped waiter, timeout or local
+refusal after push does not prove the remote effect was undone. The existing
+result API does not provide a durable per-command receipt across process loss;
+that integration remains with the kernel operation owner. Directory checks are
+boundary observations, not an OS sandbox against other same-user native code.
+
 `just commit-check` exercises actual isolated Git publication, fast-forward,
 preservation, checkout locking, cancellation and server-side hook refusal.
 These checks establish local Git behavior; they do not establish positive
@@ -171,7 +185,13 @@ validation boundaries against a real SQLite write lock and verifies that an
 actual module disable still clears the scope.
 
 The opt-in Linux `scripts/periodic-fleet.py` accepts an owned Server
-`--fixture-sync3` receipt and a new output directory outside this repository.
+`--fixture-sync3` receipt, a new output directory and an explicit
+`--work-root` outside this repository. The native execution/storage owner supplies
+the existing admitted work root; the harness never falls back to HOME. Its
+ephemeral repositories, replicas and credential stores use that root, and each
+child receives its own TMPDIR there. Native provider temporary paths still need
+target qualification. Use a path short enough for the native Unix sockets.
+The path argument supplies placement, not storage or execution admission.
 It drives 2–32 separate Rust processes, native Secret Services and replicas,
 with 2–1024 generated repositories. It exercises explicit per-device write
 consent, concurrent connection, ordinary publication/fast-forward, dirty-work

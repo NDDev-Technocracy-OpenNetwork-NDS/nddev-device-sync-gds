@@ -81,6 +81,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fixture", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--work-root", type=Path, required=True,
+                        help="Existing admitted native fixture directory outside the source tree; no HOME fallback")
     parser.add_argument("--clients", type=int, choices=range(2, 33), default=32, metavar="2..32")
     parser.add_argument("--repositories", type=int, choices=range(2, 1025), default=1024, metavar="2..1024")
     parser.add_argument("--guard-contention", action="store_true", help="Also exercise real SQLite admission pressure against the original proof")
@@ -89,6 +91,9 @@ def main():
     assert args.fixture.is_absolute() and args.fixture.is_file()
     assert args.output.is_absolute() and not args.output.exists()
     assert not args.output.resolve().is_relative_to(ROOT)
+    assert args.work_root.is_absolute() and args.work_root.is_dir()
+    args.work_root = args.work_root.resolve(strict=True)
+    assert not args.work_root.is_relative_to(ROOT)
     receipt = json.loads(args.fixture.read_text())
     assert receipt["status"] == "running" and receipt["owner_email"].endswith(".invalid")
     for name in ("control_file", "stop_marker"):
@@ -240,8 +245,9 @@ def qualify(args, receipt):
     provider = MetadataServer(("127.0.0.1", 0), Metadata)
     thread = threading.Thread(target=provider.serve_forever, daemon=True)
     thread.start()
-    scratch = Path.home() / ".local/state"
-    scratch.mkdir(parents=True, exist_ok=True)
+    # Placement is supplied by the native execution/storage owner. A missing
+    # work root never falls back to HOME or creates another managed root.
+    scratch = args.work_root
     assert shutil.disk_usage(scratch).free >= (16 if full else 4) * 1024**3
     with tempfile.TemporaryDirectory(prefix="nds-git-fleet-", dir=scratch) as directory:
         base = Path(directory)
@@ -273,14 +279,14 @@ def qualify(args, receipt):
 
             def start(index):
                 root = base / str(index)
-                for name in ("data/keyrings", "state", "config", "cache", "runtime", "control"):
+                for name in ("data/keyrings", "state", "config", "cache", "runtime", "control", "tmp"):
                     (root / name).mkdir(parents=True, mode=0o700)
                 env = {k: v for k, v in os.environ.items()
                        if k in ("PATH", "HOME", "LANG", "LC_ALL", "LD_LIBRARY_PATH")}
                 env.update({k: str(root / v) for k, v in (
                     ("XDG_DATA_HOME", "data"), ("XDG_STATE_HOME", "state"),
                     ("XDG_CONFIG_HOME", "config"), ("XDG_CACHE_HOME", "cache"),
-                    ("XDG_RUNTIME_DIR", "runtime"))})
+                    ("XDG_RUNTIME_DIR", "runtime"), ("TMPDIR", "tmp"))})
                 env.update({
                     "NDS_GIT_FLEET_ROOT": str(root), "NDS_FLEET_INDEX": str(index),
                     "NDS_FLEET_COUNT": str(args.clients),
@@ -433,6 +439,7 @@ def qualify(args, receipt):
                 assert hashlib.file_digest(binary, "sha256").hexdigest() == executable_sha256
             proof = {
                 "source": source, "dirty_source": dirty, "clients": args.clients,
+                "fixture_work_root": str(scratch),
                 "native_executable": staged.name,
                 "native_executable_sha256": executable_sha256,
                 "repositories": args.repositories, "distinct_devices": len(identities),

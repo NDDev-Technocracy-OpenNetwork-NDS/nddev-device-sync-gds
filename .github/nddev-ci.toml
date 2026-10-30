@@ -25,8 +25,8 @@ command = ["cargo", "test", "--locked", "--features", "github-catalog"]
 timeout = 600
 
 [extras.commit-sync]
-purpose = "Lint and test the optional catalog-runtime and commit-sync features"
-command = ["cargo", "test", "--locked", "--features", "catalog-runtime,commit-sync"]
+purpose = "Run the owning all-feature tests, including catalog and commit synchronization"
+command = ["cargo", "test", "--locked", "--all-features"]
 timeout = 600
 
 [extras.wasm-gate]
