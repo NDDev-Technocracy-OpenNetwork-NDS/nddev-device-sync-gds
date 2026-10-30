@@ -185,7 +185,13 @@ validation boundaries against a real SQLite write lock and verifies that an
 actual module disable still clears the scope.
 
 The opt-in Linux `scripts/periodic-fleet.py` accepts an owned Server
-`--fixture-sync3` receipt and a new output directory outside this repository.
+`--fixture-sync3` receipt, a new output directory and an explicit
+`--work-root` outside this repository. The native execution/storage owner supplies
+the existing admitted work root; the harness never falls back to HOME. Its
+ephemeral repositories, replicas and credential stores use that root, and each
+child receives its own TMPDIR there. Native provider temporary paths still need
+target qualification. Use a path short enough for the native Unix sockets.
+The path argument supplies placement, not storage or execution admission.
 It drives 2–32 separate Rust processes, native Secret Services and replicas,
 with 2–1024 generated repositories. It exercises explicit per-device write
 consent, concurrent connection, ordinary publication/fast-forward, dirty-work
