@@ -1,12 +1,15 @@
 //! Explicit connection only. The existing-commit scheduler is not activated here.
 //! Existing work/configuration is read, never rewritten; only an additional
 //! local marker is created when a caller has proved its original write grant.
+use super::native_checkout::{
+    directory_flags, directory_identity, lease, open_directory, same_directory,
+};
 use super::*;
 use nddev_device_sync_domain::repositories::workspace::{
     CheckoutPresence, ConnectionBlock, ConnectionDecision, connection_decision,
 };
 use rustix::fs::{Mode, OFlags, RenameFlags, openat, renameat_with};
-use std::{io::Write, os::unix::fs::MetadataExt, path::Path};
+use std::{io::Write, path::Path};
 
 pub enum ConnectionOutcome {
     Connected {
@@ -47,44 +50,6 @@ impl Drop for EmptyOwner<'_> {
     }
 }
 
-fn directory_flags() -> OFlags {
-    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC
-}
-fn directory_identity(directory: &File) -> Result<(u64, u64), ModuleError> {
-    let metadata = directory.metadata().map_err(|_| ModuleError::Unavailable)?;
-    Ok((metadata.dev(), metadata.ino()))
-}
-fn same_directory(path: &Path, directory: &File) -> bool {
-    open_directory(path)
-        .and_then(|current| directory_identity(&current))
-        .ok()
-        .is_some_and(|current| directory_identity(directory).ok() == Some(current))
-}
-fn open_directory(path: &Path) -> Result<File, ModuleError> {
-    rustix::fs::open(path, directory_flags(), Mode::empty())
-        .map(File::from)
-        .map_err(|_| ModuleError::Unavailable)
-}
-fn lease(directory: &File, name: &str) -> Result<File, ModuleError> {
-    let file = File::from(
-        openat(
-            directory,
-            name,
-            OFlags::CREATE | OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::RUSR | Mode::WUSR,
-        )
-        .map_err(|_| ModuleError::Unavailable)?,
-    );
-    if !file
-        .metadata()
-        .map_err(|_| ModuleError::Unavailable)?
-        .is_file()
-    {
-        return Err(ModuleError::InvalidInput);
-    }
-    file.try_lock().map_err(|_| ModuleError::Busy)?;
-    Ok(file)
-}
 fn collision(directory: &Path, name: &str) -> Result<bool, ModuleError> {
     for (count, entry) in std::fs::read_dir(directory)
         .map_err(|_| ModuleError::Unavailable)?
@@ -271,6 +236,10 @@ impl GitWorkspace {
                 .try_clone()
                 .map_err(|_| ModuleError::Unavailable)?,
         )?;
+        session.directories = Some(super::native_checkout::CheckoutDirectories::capture(
+            &session.checkout,
+            &session.git_dir,
+        )?);
         session.safe_configuration().await?;
         let snapshot = session.witness().await?;
         let presence = CheckoutPresence::Repository {
@@ -371,6 +340,9 @@ impl GitWorkspace {
             cancellation: cancellation.child_token(),
             revalidate,
             _lease: lease,
+            // Existing checkouts capture directories before their first Git
+            // command. A clone instead retains its staging/publication owners.
+            directories: None,
             fetched: None,
             location: Some(location.clone()),
             deadline: tokio::time::Instant::now() + Duration::from_secs(120),
