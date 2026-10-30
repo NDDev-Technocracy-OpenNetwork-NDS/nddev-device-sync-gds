@@ -15,14 +15,21 @@ use nddev_device_sync_domain::{
 };
 use std::{
     ffi::OsString,
-    fs::{File, OpenOptions},
+    fs::File,
     path::{Path, PathBuf},
     time::Duration,
 };
 use tracing::Instrument;
 use zeroize::Zeroizing;
 
+#[cfg(target_os = "windows")]
+use std::fs::OpenOptions;
+
 const OUTPUT_BYTES: usize = 1_048_576;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[path = "native_checkout.rs"]
+mod native_checkout;
 
 #[path = "submodules.rs"]
 mod submodules;
@@ -77,6 +84,10 @@ impl GitWorkspace {
     /// Only an existing checkout in the authorized owner/repository layout.
     /// `revalidate` checks actual NDS authority, module write consent and the
     /// exact protected credential selection before EACH command and completion.
+    ///
+    /// The caller retains and polls this future through cancellation until it
+    /// returns. Dropping a waiter requests child termination but is not a drain
+    /// acknowledgement or proof that a submitted push had no remote effect.
     pub async fn synchronize<F>(
         &self,
         location: &CheckoutLocation,
@@ -155,6 +166,11 @@ impl GitWorkspace {
         if cancellation.is_cancelled() {
             return Err(ModuleError::Cancelled);
         }
+        // Capture read-only native owners before awaiting authority. Matching
+        // marker bytes cannot let a replacement directory inherit this cycle.
+        let git_dir = checkout.join(".git");
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let directories = native_checkout::CheckoutDirectories::capture(&checkout, &git_dir)?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
         tokio::select! { biased;
             () = cancellation.cancelled() => return Err(ModuleError::Cancelled),
@@ -166,7 +182,8 @@ impl GitWorkspace {
         let input = Zeroizing::new(format!("x-access-token:{credential}"));
         let mut authorization = Zeroizing::new(String::from("Authorization: Basic "));
         STANDARD.encode_string(input.as_bytes(), &mut authorization);
-        let git_dir = checkout.join(".git");
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        directories.validate_paths(&checkout, &git_dir)?;
         if !git_dir.is_dir()
             || std::fs::symlink_metadata(&git_dir)
                 .map_err(|_| ModuleError::Unavailable)?
@@ -175,19 +192,25 @@ impl GitWorkspace {
         {
             return Err(ModuleError::Unavailable);
         }
-        if std::fs::symlink_metadata(git_dir.join("nds-sync.lock"))
-            .is_ok_and(|metadata| !metadata.file_type().is_file())
-        {
-            return Err(ModuleError::Unavailable);
-        }
-        let lease = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(git_dir.join("nds-sync.lock"))
-            .map_err(|_| ModuleError::Unavailable)?;
-        lease.try_lock().map_err(|_| ModuleError::Busy)?;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let lease = directories.lease()?;
+        #[cfg(target_os = "windows")]
+        let lease = {
+            if std::fs::symlink_metadata(git_dir.join("nds-sync.lock"))
+                .is_ok_and(|metadata| !metadata.file_type().is_file())
+            {
+                return Err(ModuleError::Unavailable);
+            }
+            let lease = OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(git_dir.join("nds-sync.lock"))
+                .map_err(|_| ModuleError::Unavailable)?;
+            lease.try_lock().map_err(|_| ModuleError::Busy)?;
+            lease
+        };
         let cancellation = cancellation.child_token();
         let _cancel_on_drop = cancellation.clone().drop_guard();
         let location = read_binding(&git_dir)?.map(|binding| binding.location);
@@ -202,6 +225,8 @@ impl GitWorkspace {
             git_dir,
             location,
             _lease: lease,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            directories: Some(directories),
             fetched: None,
             deadline,
         };
@@ -245,6 +270,8 @@ struct Session<'a, G> {
     revalidate: G,
     git_dir: PathBuf,
     _lease: File,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    directories: Option<native_checkout::CheckoutDirectories>,
     fetched: Option<String>,
     location: Option<CheckoutLocation>,
     deadline: tokio::time::Instant,
@@ -265,7 +292,15 @@ where
     G: FnMut() -> F + Send,
     F: std::future::Future<Output = Result<(), ModuleError>> + Send,
 {
+    fn validate_checkout(&self) -> Result<(), ModuleError> {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if let Some(directories) = &self.directories {
+            directories.validate(&self.checkout, &self.git_dir, &self._lease)?;
+        }
+        Ok(())
+    }
     async fn validate(&mut self) -> Result<(), ModuleError> {
+        self.validate_checkout()?;
         if tokio::time::Instant::now() >= self.deadline {
             return Err(ModuleError::Timeout);
         }
@@ -279,7 +314,7 @@ where
         if self.cancellation.is_cancelled() {
             return Err(ModuleError::Cancelled);
         }
-        Ok(())
+        self.validate_checkout()
     }
     async fn git(&mut self, arguments: &[&str]) -> Result<ProcessOutput, ModuleError> {
         self.git_in(&self.checkout.clone(), &self.git_dir.clone(), arguments)

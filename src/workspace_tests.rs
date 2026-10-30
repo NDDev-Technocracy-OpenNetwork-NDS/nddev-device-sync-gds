@@ -599,3 +599,43 @@ async fn adoption_rejects_a_git_directory_replaced_during_confirmation() {
         "concurrent user path must be preserved"
     );
 }
+
+#[tokio::test]
+async fn adoption_cannot_follow_original_git_metadata_into_a_replacement_checkout() {
+    let f = Fixture::new();
+    let location = fixture_location("personal", "first");
+    git(
+        &f.first,
+        &["config", "remote.origin.url", &location.https_url()],
+    );
+    let retained = f._directory.path().join("retained-original-checkout");
+    let original_index = std::fs::read(f.first.join(".git/index")).unwrap();
+    let result = f
+        .workspace
+        .connect(
+            &location,
+            "generated-invalid-token",
+            &CancellationToken::new(),
+            || async { Ok(()) },
+            || async {
+                // Retain the exact Git directory but replace the containing
+                // checkout with byte-identical files during confirmation.
+                std::fs::rename(&f.first, &retained).unwrap();
+                std::fs::create_dir(&f.first).unwrap();
+                std::fs::rename(retained.join(".git"), f.first.join(".git")).unwrap();
+                std::fs::copy(retained.join("initial.txt"), f.first.join("initial.txt")).unwrap();
+                Ok(())
+            },
+        )
+        .await;
+    assert!(matches!(result, Err(ModuleError::Busy)));
+    assert!(!f.first.join(".git/nds-binding.json").exists());
+    assert_eq!(
+        std::fs::read(f.first.join(".git/index")).unwrap(),
+        original_index
+    );
+    assert_eq!(
+        std::fs::read(f.first.join("initial.txt")).unwrap(),
+        std::fs::read(retained.join("initial.txt")).unwrap()
+    );
+}

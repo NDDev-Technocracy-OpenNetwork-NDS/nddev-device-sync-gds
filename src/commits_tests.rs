@@ -1,5 +1,8 @@
 //! Actual isolated Git repositories, objects, ref transactions and worktrees.
 //! Local transport does not establish positive GitHub credential acceptance.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[path = "checkout_identity_tests.rs"]
+mod checkout_identity_tests;
 #[path = "submodule_tests.rs"]
 mod submodule_tests;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -8,7 +11,7 @@ mod workspace_tests;
 use super::*;
 use nddev_device_sync_adapter_io::NativeIo;
 use nddev_device_sync_domain::repositories::workspace::SyncBlock;
-use std::path::Path;
+use std::{fs::OpenOptions, path::Path};
 use std::{
     process::Command,
     sync::{

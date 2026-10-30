@@ -70,6 +70,20 @@ cancellation, output and operation time are bounded by the existing ProcessIo.
 Local Git inspections receive no credential and cannot start a network transport.
 Raw paths, refs, command output and credentials are not telemetry fields.
 
+Linux/macOS existing-checkout operations retain native handles for the checkout,
+Git directory and local lock. They recheck those exact identities on both sides
+of authorization awaits and before reporting completion. Replacing a directory
+or deleting, replacing or symlinking its lock refuses the cycle; matching binding
+bytes cannot transfer it to the replacement. These local witnesses use the same
+native lock helpers as checkout connection.
+
+The composition owner must retain and poll an admitted Git future through
+cancellation until its actual result returns. A dropped waiter, timeout or local
+refusal after push does not prove the remote effect was undone. The existing
+result API does not provide a durable per-command receipt across process loss;
+that integration remains with the kernel operation owner. Directory checks are
+boundary observations, not an OS sandbox against other same-user native code.
+
 `just commit-check` exercises actual isolated Git publication, fast-forward,
 preservation, checkout locking, cancellation and server-side hook refusal.
 These checks establish local Git behavior; they do not establish positive
