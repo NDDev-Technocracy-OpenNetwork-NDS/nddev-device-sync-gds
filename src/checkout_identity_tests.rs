@@ -3,8 +3,26 @@
 use super::*;
 use std::sync::atomic::AtomicBool;
 
-fn replacement(fixture: &Fixture) -> PathBuf {
+fn bind_fixture(fixture: &Fixture) -> CheckoutLocation {
     use nddev_device_sync_domain::repositories::catalog::{GithubAccountId, RepositoryId};
+    let location = CheckoutLocation::new(
+        RepositoryId::new(11).unwrap(),
+        GithubAccountId::new(5).unwrap(),
+        "personal".into(),
+        "first".into(),
+    )
+    .unwrap();
+    let binding = serde_json::to_vec(&CheckoutBinding {
+        id: "10000000-0000-4000-8000-000000000001".into(),
+        principal: fixture.workspace.principal.clone(),
+        location: location.clone(),
+    })
+    .unwrap();
+    std::fs::write(fixture.first.join(".git/nds-binding.json"), binding).unwrap();
+    location
+}
+
+fn replacement(fixture: &Fixture) -> PathBuf {
     let path = fixture._directory.path().join("replacement");
     git(
         fixture._directory.path(),
@@ -17,28 +35,20 @@ fn replacement(fixture: &Fixture) -> PathBuf {
     );
     // Identical portable binding bytes are intentionally insufficient to
     // replace the physical owner captured before the authorization await.
-    let binding = serde_json::to_vec(&CheckoutBinding {
-        id: "10000000-0000-4000-8000-000000000001".into(),
-        principal: fixture.workspace.principal.clone(),
-        location: CheckoutLocation::new(
-            RepositoryId::new(11).unwrap(),
-            GithubAccountId::new(5).unwrap(),
-            "personal".into(),
-            "first".into(),
-        )
-        .unwrap(),
-    })
+    std::fs::copy(
+        fixture.first.join(".git/nds-binding.json"),
+        path.join(".git/nds-binding.json"),
+    )
     .unwrap();
-    for checkout in [&fixture.first, &path] {
-        std::fs::write(checkout.join(".git/nds-binding.json"), &binding).unwrap();
-    }
     path
 }
 
 #[tokio::test]
 async fn replacing_checkout_across_authority_await_preserves_both_repositories() {
     for before_lease in [true, false] {
-        let fixture = Fixture::new();
+        let mut fixture = Fixture::new();
+        fixture.workspace.fixture_remote = Some(fixture.endpoint.clone());
+        let location = bind_fixture(&fixture);
         let remote = fixture.remote_head();
         let local = commit(&fixture.first, "retained.txt", "original existing commit");
         let replacement = replacement(&fixture);
@@ -48,9 +58,8 @@ async fn replacing_checkout_across_authority_await_preserves_both_repositories()
         let changed = AtomicBool::new(false);
         let result = fixture
             .workspace
-            .run(
-                fixture.first.clone(),
-                fixture.endpoint.clone(),
+            .synchronize(
+                &location,
                 false,
                 "generated-invalid-token",
                 &CancellationToken::new(),
@@ -91,7 +100,9 @@ async fn replacing_checkout_across_authority_await_preserves_both_repositories()
 
 #[tokio::test]
 async fn replacing_only_git_directory_cannot_borrow_the_retained_checkout_lease() {
-    let fixture = Fixture::new();
+    let mut fixture = Fixture::new();
+    fixture.workspace.fixture_remote = Some(fixture.endpoint.clone());
+    let location = bind_fixture(&fixture);
     let remote = fixture.remote_head();
     commit(&fixture.first, "retained.txt", "original working files");
     let replacement = replacement(&fixture);
@@ -101,9 +112,8 @@ async fn replacing_only_git_directory_cannot_borrow_the_retained_checkout_lease(
     let changed = AtomicBool::new(false);
     let result = fixture
         .workspace
-        .run(
-            fixture.first.clone(),
-            fixture.endpoint.clone(),
+        .synchronize(
+            &location,
             false,
             "generated-invalid-token",
             &CancellationToken::new(),
@@ -138,7 +148,9 @@ async fn replacing_only_git_directory_cannot_borrow_the_retained_checkout_lease(
 #[tokio::test]
 async fn replaced_missing_or_symlinked_lease_refuses_before_git_publication() {
     for kind in ["replacement", "missing", "symlink"] {
-        let fixture = Fixture::new();
+        let mut fixture = Fixture::new();
+        fixture.workspace.fixture_remote = Some(fixture.endpoint.clone());
+        let location = bind_fixture(&fixture);
         let remote = fixture.remote_head();
         let local = commit(
             &fixture.first,
@@ -152,9 +164,8 @@ async fn replaced_missing_or_symlinked_lease_refuses_before_git_publication() {
         let changed = AtomicBool::new(false);
         let result = fixture
             .workspace
-            .run(
-                fixture.first.clone(),
-                fixture.endpoint.clone(),
+            .synchronize(
+                &location,
                 false,
                 "generated-invalid-token",
                 &CancellationToken::new(),
@@ -203,16 +214,17 @@ async fn replaced_missing_or_symlinked_lease_refuses_before_git_publication() {
 
 #[tokio::test]
 async fn lost_local_lease_after_real_push_keeps_the_effect_and_refuses_success() {
-    let fixture = Fixture::new();
+    let mut fixture = Fixture::new();
+    fixture.workspace.fixture_remote = Some(fixture.endpoint.clone());
+    let location = bind_fixture(&fixture);
     let local = commit(&fixture.first, "published.txt", "completed remote effect");
     let lease = fixture.first.join(".git/nds-sync.lock");
     let retained = fixture.first.join(".git/retained-sync.lock");
     let changed = AtomicBool::new(false);
     let result = fixture
         .workspace
-        .run(
-            fixture.first.clone(),
-            fixture.endpoint.clone(),
+        .synchronize(
+            &location,
             false,
             "generated-invalid-token",
             &CancellationToken::new(),
