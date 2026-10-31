@@ -307,13 +307,14 @@ impl CatalogRuntime {
             commits.end = !page.has_more;
         }
         // Remove before I/O: every refusal advances the finite traversal.
-        let current = self
-            .shared
-            .commits
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .queue
-            .pop_front();
+        let (current, original) = {
+            let mut commits = self
+                .shared
+                .commits
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            (commits.queue.pop_front(), commits.guard.clone())
+        };
         let Some(current) = current else {
             self.shared
                 .commits
@@ -329,13 +330,16 @@ impl CatalogRuntime {
         #[cfg(all(feature = "commit-sync", any(target_os = "linux", target_os = "macos")))]
         let result = self
             .background
-            .synchronize_connection(&location, cancellation)
+            .synchronize_connection(&location, original, cancellation)
             .await;
         #[cfg(not(all(feature = "commit-sync", any(target_os = "linux", target_os = "macos"))))]
         let result: Result<
             nddev_device_sync_application::repositories::commits::CommitOutcome,
             _,
-        > = Err(GithubCatalogError::Unavailable);
+        > = {
+            drop(original);
+            Err(GithubCatalogError::Unavailable)
+        };
         self.identity
             .check_captured_local_use_lifetime(&self.authority)?;
         if cancellation.is_cancelled() {
