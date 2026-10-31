@@ -1,8 +1,8 @@
 {
-  "id": "gds",
+  "id": "github",
   "version": "0.0.1-alpha.7",
   "api_version": 1,
-  "kind": "gds",
+  "kind": "github",
   "platforms": [
     "linux"
   ],

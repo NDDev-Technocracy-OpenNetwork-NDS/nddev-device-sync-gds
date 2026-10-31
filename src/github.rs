@@ -179,7 +179,7 @@ async fn observed(
     revalidate: &mut impl AsyncFnMut() -> Result<(), ModuleError>,
     cache: Option<(&CatalogCache, &str)>,
 ) -> Result<ProviderRepositoryPage, ModuleError> {
-    let span = nddev_device_sync_telemetry::operation_span("gds", "io")
+    let span = nddev_device_sync_telemetry::operation_span("github", "io")
         .map_err(|_| ModuleError::InvalidContract)?;
     async {
         let result = bounded_read(credential, request, cancellation, revalidate, cache).await;
@@ -187,8 +187,8 @@ async fn observed(
             &tracing::Span::current(), query_outcome(&result).terminal_failure(),
         );
         match &result {
-            Ok(_) => tracing::info!(event.name="gds.catalog.read.completed", module="gds", scope="io", outcome="ok"),
-            Err(error) => tracing::warn!(event.name="gds.catalog.read.failed", module="gds", scope="io", error.type=%error, outcome="error"),
+            Ok(_) => tracing::info!(event.name="github.catalog.read.completed", module="github", scope="io", outcome="ok"),
+            Err(error) => tracing::warn!(event.name="github.catalog.read.failed", module="github", scope="io", error.type=%error, outcome="error"),
         }
         result
     }.instrument(span).await
@@ -366,8 +366,8 @@ fn status(
     retry_after: Option<&str>,
 ) -> Result<(), ModuleError> {
     tracing::info!(
-        event.name = "gds.http.response",
-        module = "gds",
+        event.name = "github.http.response",
+        module = "github",
         scope = "io",
         status,
         outcome = if matches!(status, 200 | 304) {

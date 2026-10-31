@@ -12,7 +12,7 @@ async fn phase(
 ) -> Result<Value> {
     settle(&vault).await?;
     let source = vault.github_source().await?;
-    let consent = vault.module_configuration("gds").await?;
+    let consent = vault.module_configuration("github").await?;
     let selected = Arc::new(runtime(
         identity,
         vault.clone(),
@@ -154,7 +154,7 @@ async fn authority_publication(
 ) -> Result<Value> {
     settle(&vault).await?;
     let source = vault.github_source().await?;
-    let consent = vault.module_configuration("gds").await?;
+    let consent = vault.module_configuration("github").await?;
     let selected = Arc::new(runtime(
         identity.clone(),
         vault,

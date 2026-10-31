@@ -19,20 +19,20 @@ async fn fixed_github_rejects_generated_invalid_credential_without_empty_success
             .as_nanos()
     );
     let mut logger = nddev_device_sync_telemetry::install(nddev_device_sync_telemetry::Config {
-        service: "nddev-device-sync-gds".into(),
+        service: "nddev-device-sync-github".into(),
         version: env!("CARGO_PKG_VERSION").into(),
-        repository: "NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-gds".into(),
+        repository: "NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-github".into(),
         commit: "unknown".into(),
         channel: "alpha".into(),
         standards: "v0.0.1-alpha.9".into(),
         environment: "development".into(),
-        target_prefixes: vec!["nddev_device_sync_gds".into()],
-        default_module: "gds".into(),
+        target_prefixes: vec!["nddev_device_sync_github".into()],
+        default_module: "github".into(),
         debug: None,
     })
     .unwrap();
     let feed = logger.control.subscribe().unwrap();
-    let result = nddev_device_sync_gds::github::read_user_and_page(
+    let result = nddev_device_sync_github::github::read_user_and_page(
         &token,
         &request,
         &Default::default(),
@@ -57,9 +57,9 @@ async fn fixed_github_rejects_generated_invalid_credential_without_empty_success
     assert!(
         events
             .iter()
-            .any(|event| event["event.name"] == "gds.http.response" && event["status"] == 401)
+            .any(|event| event["event.name"] == "github.http.response" && event["status"] == 401)
     );
-    assert!(text.contains("gds.catalog.read.failed"));
+    assert!(text.contains("github.catalog.read.failed"));
     assert!(
         !text.contains(&token)
             && !text.contains("Bearer ")

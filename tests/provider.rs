@@ -2,7 +2,7 @@
 
 use nddev_device_sync_adapter_io::{CancellationToken, NativeIo};
 use nddev_device_sync_domain::modules::ModuleError;
-use nddev_device_sync_gds::Gds;
+use nddev_device_sync_github::Github;
 use std::{path::Path, process::Command};
 
 fn git(repository: &Path, arguments: &[&str]) -> Vec<u8> {
@@ -38,9 +38,9 @@ fn git(repository: &Path, arguments: &[&str]) -> Vec<u8> {
     output.stdout
 }
 
-fn provider() -> Gds {
-    let executable = std::path::PathBuf::from(env!("CARGO_BIN_EXE_nds-gds-readonly-worker"));
-    Gds::new(
+fn provider() -> Github {
+    let executable = std::path::PathBuf::from(env!("CARGO_BIN_EXE_nds-github-readonly-worker"));
+    Github::new(
         NativeIo::new(1).unwrap().process_handle(),
         executable,
         std::time::Duration::from_secs(12),

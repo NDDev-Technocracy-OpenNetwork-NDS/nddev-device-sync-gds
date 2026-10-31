@@ -1,5 +1,5 @@
 //! Shared Rust catalog composition. Core owns traversal/publication decisions,
-//! Vault owns encrypted state and fences, and GDS owns the fixed provider I/O.
+//! Vault owns encrypted state and fences, and the GitHub module owns the fixed provider I/O.
 mod consent;
 mod driver;
 #[cfg(all(test, target_os = "linux", feature = "commit-sync"))]
@@ -125,7 +125,7 @@ impl CatalogRuntime {
             .check_captured_local_use_lifetime(&self.authority)
             .ok()?;
         let source = self.vault.github_source().await.ok()?;
-        let consent = self.vault.module_configuration("gds").await.ok()?;
+        let consent = self.vault.module_configuration("github").await.ok()?;
         self.identity
             .check_captured_local_use_lifetime(&self.authority)
             .ok()?;
@@ -147,7 +147,7 @@ impl CatalogRuntime {
         self.identity
             .check_captured_local_use_lifetime(&self.authority)?;
         let source = self.vault.github_source().await?;
-        let consent = self.vault.module_configuration("gds").await?;
+        let consent = self.vault.module_configuration("github").await?;
         let epoch = (source.operation_id, consent.operation_id);
         let changed = {
             let mut work = self.work.lock().unwrap_or_else(|error| error.into_inner());
@@ -229,7 +229,7 @@ impl CatalogRuntime {
         self.identity
             .check_captured_local_use_lifetime(&self.authority)?;
         let source = self.vault.github_source().await?;
-        let consent = self.vault.module_configuration("gds").await?;
+        let consent = self.vault.module_configuration("github").await?;
         let epoch = (source.operation_id, consent.operation_id);
         if source.conflicted
             || source.selection.is_none()
@@ -443,8 +443,8 @@ impl nddev_device_sync_application::repositories::catalog::collection::CatalogCo
             }
             let before = self.vault.snapshot().local_revision;
             let result = observe(
-                "gds",
-                "gds.catalog.collection",
+                "github",
+                "github.catalog.collection",
                 async {
                     nddev_device_sync_accounts::runtime::timeout(
                         std::time::Duration::from_secs(15),

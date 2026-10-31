@@ -55,8 +55,8 @@ impl Limits {
                 self.until_ms = self.until_ms.max(now.saturating_add(3_600_000));
             }
             tracing::warn!(
-                event.name = "gds.http.deferred",
-                module = "gds",
+                event.name = "github.http.deferred",
+                module = "github",
                 scope = "io",
                 outcome = "rejected",
                 status,
