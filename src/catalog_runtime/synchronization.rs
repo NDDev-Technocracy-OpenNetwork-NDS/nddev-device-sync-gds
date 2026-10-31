@@ -102,6 +102,14 @@ impl CatalogClient {
         let git_timing = fixture
             .as_ref()
             .map(|io| io.timing(crate::catalog_runtime::fleet_acceptance::TimingStage::Git));
+        #[cfg(all(test, target_os = "linux", feature = "commit-sync"))]
+        let validation_calls = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        #[cfg(all(test, target_os = "linux", feature = "commit-sync"))]
+        if let Some(fixture) = &fixture {
+            fixture
+                .git_attempts
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         let result = workspace
             .synchronize(
                 location,
@@ -112,11 +120,24 @@ impl CatalogClient {
                     let guard = guard.clone();
                     let errors = errors.clone();
                     let location = location.clone();
+                    #[cfg(all(test, target_os = "linux", feature = "commit-sync"))]
+                    let fixture = fixture.clone();
                     move || {
                         let guard = guard.clone();
                         let errors = errors.clone();
                         let location = location.clone();
+                        #[cfg(all(test, target_os = "linux", feature = "commit-sync"))]
+                        let fixture = fixture.clone();
+                        #[cfg(all(test, target_os = "linux", feature = "commit-sync"))]
+                        let validation_calls = validation_calls.clone();
                         async move {
+                            #[cfg(all(test, target_os = "linux", feature = "commit-sync"))]
+                            if validation_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                                == 1
+                                && let Some(fixture) = fixture
+                            {
+                                fixture.pause_git_validation().await.map_err(module_error)?;
+                            }
                             revalidation(guard.as_ref().clone(), errors).await?;
                             let current = guard
                                 .vault

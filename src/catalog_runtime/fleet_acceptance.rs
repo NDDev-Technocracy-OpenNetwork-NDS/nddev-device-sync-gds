@@ -34,6 +34,21 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>
 mod canary_acceptance;
 #[path = "guard_acceptance.rs"]
 mod guard_acceptance;
+#[path = "proof_retry_acceptance.rs"]
+mod proof_retry_acceptance;
+
+pub(super) struct ProofPause {
+    pub entered: tokio::sync::Notify,
+    pub release: tokio::sync::Notify,
+}
+impl ProofPause {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        })
+    }
+}
 
 pub(super) struct ValidationPause {
     after: bool,
@@ -46,6 +61,10 @@ pub(super) struct FixtureIo {
     root: PathBuf,
     remotes: PathBuf,
     validation_pause: Mutex<Option<Arc<ValidationPause>>>,
+    pub git_validation_pause: Mutex<Option<Arc<ProofPause>>>,
+    pub proof_retry_pause: Mutex<Option<Arc<ProofPause>>>,
+    pub proof_retry_reads: std::sync::atomic::AtomicU64,
+    pub git_attempts: std::sync::atomic::AtomicU64,
     timings: Mutex<[[u64; 3]; 3]>,
     captured_reads: std::sync::atomic::AtomicU64,
 }
@@ -75,6 +94,34 @@ impl Drop for TimingSpan {
     }
 }
 impl FixtureIo {
+    pub(super) async fn pause_git_validation(
+        &self,
+    ) -> std::result::Result<(), view::GithubCatalogError> {
+        let pause = self.git_validation_pause.lock().unwrap().take();
+        if let Some(pause) = pause {
+            pause.entered.notify_one();
+            tokio::time::timeout(Duration::from_secs(20), pause.release.notified())
+                .await
+                .map_err(|_| view::GithubCatalogError::Timeout)?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn pause_proof_retry(
+        &self,
+    ) -> std::result::Result<(), view::GithubCatalogError> {
+        self.proof_retry_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let pause = self.proof_retry_pause.lock().unwrap().take();
+        if let Some(pause) = pause {
+            pause.entered.notify_one();
+            tokio::time::timeout(Duration::from_secs(20), pause.release.notified())
+                .await
+                .map_err(|_| view::GithubCatalogError::Timeout)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn record_captured_read(&self) {
         self.captured_reads
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -507,6 +554,10 @@ async fn run_member() -> Result<()> {
         root: workspace,
         remotes: PathBuf::from(std::env::var("NDS_GIT_FLEET_REMOTES")?).canonicalize()?,
         validation_pause: Mutex::new(None),
+        git_validation_pause: Mutex::new(None),
+        proof_retry_pause: Mutex::new(None),
+        proof_retry_reads: std::sync::atomic::AtomicU64::new(0),
+        git_attempts: std::sync::atomic::AtomicU64::new(0),
         timings: Mutex::default(),
         captured_reads: std::sync::atomic::AtomicU64::new(0),
     });
@@ -583,7 +634,9 @@ async fn run_member() -> Result<()> {
                         let database = PathBuf::from(command["database"].as_str().ok_or("missing owned database")?).canonicalize()?;
                         assert!(database.starts_with(root.join("replica").canonicalize()?));
                         assert!(database.is_file() && database.extension().is_some_and(|e| e=="db"));
-                        guard_acceptance::probe(identity.clone(), vault.clone(), io.clone(), database).await
+                        let mut facts = guard_acceptance::probe(identity.clone(), vault.clone(), io.clone(), database.clone()).await?;
+                        facts["retained_proof_read_retry"] = proof_retry_acceptance::probe(identity.clone(), vault.clone(), io.clone(), database).await?;
+                        Ok(facts)
                     }
                     "commit" => {
                         let path = io.root.join(location(2).relative_path());
