@@ -188,6 +188,15 @@ captures. `--guard-contention` checks both validation boundaries against a real
 SQLite write lock, rejects borrowed or cancelled catalog witnesses, and verifies
 that an actual disable clears the scope and re-enabling requires a new read.
 
+A transient protected-read `Busy` receives one reread of the same original
+proof inside the existing provider/Git deadline. It captures no new fence and
+repeats no Git command or completed effect. A second refusal remains a refusal;
+scope replacement, cancellation and all other errors retain their meaning.
+The native contention proof also keeps the original checkout lease through a
+real admission refusal, checks recovery within one Git attempt and rejects
+cancellation during the reread. Same-session authority publication exercises
+the original protected identity reader without another sign-in or device.
+
 The opt-in Linux `scripts/periodic-fleet.py` accepts an owned Server
 `--fixture-sync3` receipt, a new output directory and an explicit
 `--work-root` outside this repository. The native execution/storage owner supplies

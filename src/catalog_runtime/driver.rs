@@ -295,11 +295,37 @@ impl CatalogUseGuard {
             .fixture
             .as_ref()
             .map(|io| io.timing(super::fleet_acceptance::TimingStage::Validation));
+        let result = self.validate_once().await;
+        if result != Err(GithubCatalogError::Busy) {
+            return result;
+        }
+        // A protected metadata publication can race this read (for example,
+        // Accounts' same-authority slot renewal). Reread the SAME proof once;
+        // never reacquire a fence, repeat Git or manufacture a positive result.
+        // The owning provider/Git deadline and cancellation still enclose it.
+        #[cfg(all(test, target_os = "linux", feature = "commit-sync"))]
+        if let Some(fixture) = &self.fixture {
+            fixture.pause_proof_retry().await?;
+        }
+        self.check()?;
+        self.validate_once().await
+    }
+
+    async fn validate_once(&self) -> Result<(), GithubCatalogError> {
         self.module.validate().await?;
         self.check()?;
         self.identity.validate_local_use(&self.fence).await?;
         self.check()?;
         self.vault.validate_repository_read(&self.read).await?;
+        self.check()?;
+        self.identity.validate_local_use(&self.fence).await?;
+        self.check()
+    }
+
+    #[cfg(all(test, target_os = "linux", feature = "commit-sync"))]
+    pub(super) async fn validate_original_identity_for_fixture(
+        &self,
+    ) -> Result<(), GithubCatalogError> {
         self.check()?;
         self.identity.validate_local_use(&self.fence).await?;
         self.check()
