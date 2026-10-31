@@ -126,6 +126,10 @@ impl CatalogClient {
             .await?;
         flight.check()?;
         let read = Arc::new(captured);
+        #[cfg(all(test, target_os = "linux", feature = "commit-sync"))]
+        if let Some(fixture) = self.shared.fixture.lock().unwrap().as_ref() {
+            fixture.record_captured_read();
+        }
         Ok(CatalogUseGuard {
             module,
             identity: self.identity.clone(),
