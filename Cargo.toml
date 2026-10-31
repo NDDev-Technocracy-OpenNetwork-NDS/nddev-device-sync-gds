@@ -17,7 +17,7 @@ github-catalog = ["dep:zeroize", "dep:tokio", "dep:tokio-util", "dep:tracing", "
 
 [dependencies]
 nddev-device-sync-accounts = { git = "https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-accounts", rev = "557c208e9462c0458506d98b7d1a645eb08ec50b", optional = true }
-nddev-device-sync-vault = { git = "https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-vault", rev = "54a823e7c7bf94c8902029c9eb54577ee9cfec16", optional = true }
+nddev-device-sync-vault = { git = "https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-vault", rev = "ca97b8b48c637013d43fcc087e1f3715a3c61ef3", optional = true }
 uuid = { version = "1.27", features = ["v4"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -65,7 +65,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "net",
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 nddev-device-sync-accounts = { git = "https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-accounts", rev = "557c208e9462c0458506d98b7d1a645eb08ec50b", features = ["development-http"] }
-nddev-device-sync-vault = { git = "https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-vault", rev = "54a823e7c7bf94c8902029c9eb54577ee9cfec16", features = ["development-http"] }
+nddev-device-sync-vault = { git = "https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-vault", rev = "ca97b8b48c637013d43fcc087e1f3715a3c61ef3", features = ["development-http"] }
 
 [lints.rust]
 unsafe_code = "forbid"
