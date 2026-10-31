@@ -147,7 +147,7 @@ pub(super) async fn probe(
 ) -> Result<Value> {
     settle(&vault).await?;
     let source = vault.github_source().await?;
-    let consent = vault.module_configuration("gds").await?;
+    let consent = vault.module_configuration("github").await?;
     let selected = Arc::new(runtime(
         identity.clone(),
         vault.clone(),
@@ -207,10 +207,10 @@ pub(super) async fn probe(
         same_scope_captures, 1,
         "contention retries cannot recapture the scope"
     );
-    let setting = vault.module_configuration("gds").await?;
+    let setting = vault.module_configuration("github").await?;
     vault
         .set_module_configuration(
-            "gds".into(),
+            "github".into(),
             setting.revision,
             setting.pending_id,
             Configuration {
@@ -229,10 +229,10 @@ pub(super) async fn probe(
                 .observation(state.epoch.as_ref().unwrap(), "1")
                 .is_none()
     };
-    let setting = vault.module_configuration("gds").await?;
+    let setting = vault.module_configuration("github").await?;
     vault
         .set_module_configuration(
-            "gds".into(),
+            "github".into(),
             setting.revision,
             setting.pending_id,
             Configuration {

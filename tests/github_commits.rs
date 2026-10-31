@@ -12,7 +12,7 @@ use nddev_device_sync_domain::repositories::{
     catalog::{GithubAccountId, RepositoryId},
     workspace::{CheckoutLocation, SyncBlock, WorkspacePrincipal},
 };
-use nddev_device_sync_gds::commits::{ConnectionOutcome, GitWorkspace};
+use nddev_device_sync_github::commits::{ConnectionOutcome, GitWorkspace};
 use std::{io::Write, path::Path, process::Command};
 use zeroize::Zeroizing;
 
@@ -52,7 +52,7 @@ fn existing_commit(path: &Path, name: &str, receipt: &Path) -> Result<String> {
             "commit",
             "--quiet",
             "-m",
-            "test(gds): generated existing fixture commit",
+            "test(github): generated existing fixture commit",
         ],
     )?;
     let head = git(path, &["rev-parse", "HEAD"])?;
@@ -78,25 +78,25 @@ async fn github_existing_commits() -> Result {
     if std::env::var("GITHUB_ACTIONS").as_deref() != Ok("true")
         || std::env::var("GITHUB_REF").as_deref() != Ok("refs/heads/main")
         || std::env::var("GITHUB_REPOSITORY").as_deref()
-            != Ok("NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-gds")
+            != Ok("NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-github")
     {
         return Err("Requires the owning trusted main workflow".into());
     }
-    let token = Zeroizing::new(std::env::var("NDS_GDS_ACCEPTANCE_TOKEN")?);
-    let receipt = std::path::PathBuf::from(std::env::var("NDS_GDS_ACCEPTANCE_RECEIPT")?);
+    let token = Zeroizing::new(std::env::var("NDS_GITHUB_ACCEPTANCE_TOKEN")?);
+    let receipt = std::path::PathBuf::from(std::env::var("NDS_GITHUB_ACCEPTANCE_RECEIPT")?);
     let fixture: serde_json::Value = serde_json::from_slice(&std::fs::read(&receipt)?)?;
     let branch = fixture["branch"].as_str().ok_or("Missing owned branch")?;
     if !branch.starts_with("nds-acceptance/") || fixture["created"] != true {
         return Err("Missing confirmed owned branch".into());
     }
     let location = CheckoutLocation::new(
-        RepositoryId::new(std::env::var("NDS_GDS_REPOSITORY_ID")?.parse()?)?,
-        GithubAccountId::new(std::env::var("NDS_GDS_OWNER_ID")?.parse()?)?,
+        RepositoryId::new(std::env::var("NDS_GITHUB_REPOSITORY_ID")?.parse()?)?,
+        GithubAccountId::new(std::env::var("NDS_GITHUB_OWNER_ID")?.parse()?)?,
         "NDDev-Technocracy-OpenNetwork-NDS".into(),
-        "nddev-device-sync-gds".into(),
+        "nddev-device-sync-github".into(),
     )?;
     let cancellation = CancellationToken::new();
-    let metadata = nddev_device_sync_gds::github::read_repository(
+    let metadata = nddev_device_sync_github::github::read_repository(
         &token,
         &location,
         &cancellation,
@@ -129,7 +129,7 @@ async fn github_existing_commits() -> Result {
                 &cancellation,
                 || async { Ok(()) },
                 || async {
-                    nddev_device_sync_gds::github::read_repository(
+                    nddev_device_sync_github::github::read_repository(
                         &token,
                         &location,
                         &cancellation,

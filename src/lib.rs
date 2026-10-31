@@ -10,7 +10,7 @@ pub use view::*;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub mod rust_status;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-pub use rust_status::IsolatedGds as Gds;
+pub use rust_status::IsolatedGithub as Github;
 
 #[cfg(all(
     feature = "commit-sync",

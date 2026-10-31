@@ -12,7 +12,7 @@ import urllib.error
 import urllib.request
 import uuid
 
-REPOSITORY = "NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-gds"
+REPOSITORY = "NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-github"
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -87,13 +87,13 @@ def cleanup(receipt, run, sha, token):
             subprocess.run(["/usr/bin/git", "init", "--bare", "--template=", directory],
                            env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                            check=True, timeout=10)
-            authenticated = environment | {"NDS_GDS_GITHUB_AUTHORIZATION": "Authorization: Basic "
+            authenticated = environment | {"NDS_GITHUB_AUTHORIZATION": "Authorization: Basic "
                 + base64.b64encode(("x-access-token:" + token).encode()).decode()}
             result = subprocess.run([
                 "/usr/bin/git", "-c", "core.hooksPath=/dev/null", "-c", "credential.helper=",
                 "-c", "http.followRedirects=false", "-c", "protocol.allow=never",
                 "-c", "protocol.https.allow=always",
-                "--config-env=http.https://github.com/.extraHeader=NDS_GDS_GITHUB_AUTHORIZATION",
+                "--config-env=http.https://github.com/.extraHeader=NDS_GITHUB_AUTHORIZATION",
                 "push", "--porcelain", "--force-with-lease=" + ref + ":" + observed["object"]["sha"],
                 "https://github.com/" + REPOSITORY + ".git", ":" + ref], cwd=directory,
                 env=authenticated, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
@@ -112,8 +112,8 @@ def main():
     run, sha = context(os.environ)
     if subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip() != sha:
         raise ValueError("Checkout differs from the selected workflow source")
-    receipt = Path(os.environ["RUNNER_TEMP"]) / "nds-gds-github-acceptance.json"
-    token = os.environ["NDS_GDS_ACCEPTANCE_TOKEN"]
+    receipt = Path(os.environ["RUNNER_TEMP"]) / "nds-github-github-acceptance.json"
+    token = os.environ["NDS_GITHUB_ACCEPTANCE_TOKEN"]
     if sys.argv[1] == "cleanup":
         cleanup(receipt, run, sha, token)
         return
@@ -123,8 +123,8 @@ def main():
     if len(binaries) != 1 or not binaries[0].is_file() or not binaries[0].is_relative_to(ROOT / "target"):
         raise ValueError("Expected one locally compiled acceptance executable")
     metadata = api("GET", "", token)
-    if (metadata is None or metadata["id"] != int(os.environ["NDS_GDS_REPOSITORY_ID"])
-            or metadata["owner"]["id"] != int(os.environ["NDS_GDS_OWNER_ID"]) or metadata["private"]):
+    if (metadata is None or metadata["id"] != int(os.environ["NDS_GITHUB_REPOSITORY_ID"])
+            or metadata["owner"]["id"] != int(os.environ["NDS_GITHUB_OWNER_ID"]) or metadata["private"]):
         raise ValueError("Unexpected repository identity")
     branch = "nds-acceptance/" + run + "-" + uuid.uuid4().hex
     value = {"repository": REPOSITORY, "repository_id": metadata["id"], "owner_id": metadata["owner"]["id"],
@@ -139,7 +139,7 @@ def main():
         value["created"] = True
         receipt.write_text(json.dumps(value) + "\n")
         environment = os.environ.copy()
-        environment["NDS_GDS_ACCEPTANCE_RECEIPT"] = str(receipt)
+        environment["NDS_GITHUB_ACCEPTANCE_RECEIPT"] = str(receipt)
         # This directly executes the built test. No compiler/build script gets
         # the job's write credential during this step.
         subprocess.run([str(binaries[0]), "--ignored", "--exact", "github_existing_commits"],

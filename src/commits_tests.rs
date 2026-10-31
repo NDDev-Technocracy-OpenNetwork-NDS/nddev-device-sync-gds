@@ -67,7 +67,7 @@ fn commit(directory: &Path, name: &str, body: &str) -> String {
 #[cfg(unix)]
 #[tokio::test]
 async fn real_git_outcomes_satisfy_the_telemetry_contract() {
-    const CHILD: &str = "NDS_GDS_GIT_TELEMETRY_CHILD";
+    const CHILD: &str = "NDS_GITHUB_GIT_TELEMETRY_CHILD";
     if std::env::var_os(CHILD).is_none() {
         let result = Command::new(std::env::current_exe().unwrap())
             .args([
@@ -88,13 +88,13 @@ async fn real_git_outcomes_satisfy_the_telemetry_contract() {
     let mut logger = nddev_device_sync_telemetry::install(nddev_device_sync_telemetry::Config {
         service: "nds-git-telemetry-acceptance".into(),
         version: env!("CARGO_PKG_VERSION").into(),
-        repository: "NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-gds".into(),
+        repository: "NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-github".into(),
         commit: "unknown".into(),
         channel: "alpha".into(),
         standards: "unreleased".into(),
         environment: "development".into(),
-        target_prefixes: vec!["nddev_device_sync_gds".into()],
-        default_module: "gds".into(),
+        target_prefixes: vec!["nddev_device_sync_github".into()],
+        default_module: "github".into(),
         debug: None,
     })
     .unwrap();

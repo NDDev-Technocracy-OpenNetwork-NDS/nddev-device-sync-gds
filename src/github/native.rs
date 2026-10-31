@@ -57,7 +57,7 @@ impl Client {
             .header(AUTHORIZATION, authorization)
             .header("Accept", "application/vnd.github+json")
             .header("X-GitHub-Api-Version", API_VERSION)
-            .header("User-Agent", "nddev-device-sync-gds");
+            .header("User-Agent", "nddev-device-sync-github");
         let request = if let Some(etag) = etag {
             request.header("If-None-Match", etag)
         } else {

@@ -9,8 +9,8 @@ impl CatalogClient {
         location: CheckoutLocation,
     ) -> Result<GithubConnectionView, GithubCatalogError> {
         super::super::observe(
-            "gds",
-            "gds.workspace.connect",
+            "github",
+            "github.workspace.connect",
             async {
                 if !self.catalog_active() {
                     return Err(GithubCatalogError::Cancelled);

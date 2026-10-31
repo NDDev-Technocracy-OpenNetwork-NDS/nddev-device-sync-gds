@@ -24,7 +24,7 @@ impl ModuleUseGuard {
         required: std::collections::BTreeSet<nddev_device_sync_domain::Permission>,
     ) -> Result<Self, GithubCatalogError> {
         let fence = identity.local_use_fence().await?;
-        let setting = vault.module_configuration("gds").await?;
+        let setting = vault.module_configuration("github").await?;
         admit(&setting, &required)?;
         let guard = Self {
             identity,
@@ -44,7 +44,7 @@ impl ModuleUseGuard {
             return Err(GithubCatalogError::Cancelled);
         }
         self.identity.validate_local_use(&self.fence).await?;
-        let setting = self.vault.module_configuration("gds").await?;
+        let setting = self.vault.module_configuration("github").await?;
         admit(&setting, &self.required)?;
         if setting.operation_id != self.operation {
             self.lifetime.cancel();
@@ -80,7 +80,7 @@ impl ModuleUseGuard {
         let observation = slot.get_or_insert_with(|| super::Observed {
             epoch,
             value: ModuleObservation {
-                id: "gds".into(),
+                id: "github".into(),
                 version: env!("CARGO_PKG_VERSION").into(),
                 configured: true,
                 reachability: nddev_device_sync_domain::state::Reachability::NotChecked,

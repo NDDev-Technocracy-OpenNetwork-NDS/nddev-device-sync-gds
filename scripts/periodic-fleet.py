@@ -44,10 +44,10 @@ def build_member(output):
     artifacts = [json.loads(line) for line in built.stdout.splitlines() if line.startswith("{")]
     executables = [x["executable"] for x in artifacts if x.get("reason") == "compiler-artifact"
                    and x.get("executable") and x.get("profile", {}).get("test")
-                   and x.get("target", {}).get("name") == "nddev_device_sync_gds"
+                   and x.get("target", {}).get("name") == "nddev_device_sync_github"
                    and x["target"].get("kind") == ["lib"]]
     if len(executables) != 1:
-        raise ValueError("Expected exactly one owning GDS library test executable")
+        raise ValueError("Expected exactly one owning GitHub module library test executable")
     return Path(executables[0])
 
 
@@ -375,7 +375,7 @@ def qualify(args, receipt):
             git(seed, "init", "-q", "-b", "main")
             (seed / "initial.txt").write_text("generated initial content\n")
             git(seed, "add", "initial.txt")
-            git(seed, "commit", "-qm", "test(gds): generated fleet seed")
+            git(seed, "commit", "-qm", "test(github): generated fleet seed")
             for identity in range(1, args.repositories + 1):
                 check()
                 git(base, "clone", "--bare", "--shared", str(seed),
@@ -553,7 +553,7 @@ def qualify(args, receipt):
                 "member_prebuilt": args.member is not None,
                 "source_identity": args.identity,
                 "repositories": args.repositories, "distinct_devices": len(identities),
-                "scope": "Actual elected Rust GDS/Vault lifetimes, isolated native credentials, "
+                "scope": "Actual elected Rust GitHub-module/Vault lifetimes, isolated native credentials, "
                          "genuine session, SQLite, NDS HTTP/PostgreSQL and Git. Generated loopback "
                          "repository metadata is not GitHub discovery or provider rate-limit acceptance.",
                 "phases": history, "last_existing_commit": head,

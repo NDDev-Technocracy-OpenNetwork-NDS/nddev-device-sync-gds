@@ -1,4 +1,4 @@
-# NDDev OpenNetwork · gds
+# NDDev OpenNetwork · github
 
 AGPL-3.0-only NDS adapter. [NDDev OpenNetwork](https://nddev.ai).
 
@@ -108,7 +108,7 @@ admission. Only the existing elected Vault replica invokes its collector after
 catch-up; a follower does not start GitHub collection. Native window disposal
 leaves that owner running. No additional scheduler or daemon is installed.
 
-Enabled GDS requires this device's read-only, credential-store and local-network
+The enabled GitHub module requires this device's read-only, credential-store and local-network
 consent and the saved owner-wide GitHub source. Every provider read and encrypted
 publication rechecks that original source, consent and credential. A stale GUI
 caller cannot borrow the retained owner's authorization. Catalog failures have
@@ -244,4 +244,4 @@ clean fixture repository must produce a successful in-scope result during the
 run, and each round verifies the expected existing commit and dirty refusal.
 Historical test coverage is separate from each repository's latest outcome.
 
-Release journals live in [GitHub Releases](https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-gds/releases).
+Release journals live in [GitHub Releases](https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-github/releases).

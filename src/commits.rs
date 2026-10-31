@@ -230,7 +230,7 @@ impl GitWorkspace {
             fetched: None,
             deadline,
         };
-        let span = nddev_device_sync_telemetry::operation_span("gds", "io")
+        let span = nddev_device_sync_telemetry::operation_span("github", "io")
             .map_err(|_| ModuleError::InvalidContract)?;
         async {
             // Each command/guard checks the same deadline. Let ProcessIo's
@@ -251,9 +251,9 @@ impl GitWorkspace {
             }.await;
             nddev_device_sync_telemetry::finish_operation_span(&tracing::Span::current(), nddev_device_sync_domain::modules::query_outcome(&result).terminal_failure());
             match &result {
-                Ok(CommitOutcome::Blocked(_)) => tracing::info!(event.name="gds.commits.completed", module="gds", scope="io", outcome="rejected", error.type="git_sync_blocked"),
-                Ok(_) => tracing::info!(event.name="gds.commits.completed", module="gds", scope="io", outcome="ok"),
-                Err(error) => tracing::warn!(event.name="gds.commits.failed", module="gds", scope="io", error.type=%error, outcome="error"),
+                Ok(CommitOutcome::Blocked(_)) => tracing::info!(event.name="github.commits.completed", module="github", scope="io", outcome="rejected", error.type="git_sync_blocked"),
+                Ok(_) => tracing::info!(event.name="github.commits.completed", module="github", scope="io", outcome="ok"),
+                Err(error) => tracing::warn!(event.name="github.commits.failed", module="github", scope="io", error.type=%error, outcome="error"),
             }
             result
         }.instrument(span).await
@@ -409,7 +409,7 @@ where
                 arguments[0],
                 String::from_utf8_lossy(&result.stderr)
             );
-            tracing::warn!(event.name="gds.git.failed",module="gds",scope="io",error.type="git_exit",outcome="error");
+            tracing::warn!(event.name="github.git.failed",module="github",scope="io",error.type="git_exit",outcome="error");
             return Err(ModuleError::ProviderFailed);
         }
         Ok(result.stdout)
@@ -717,7 +717,7 @@ where
             .required(&["ls-tree", "-r", "--full-tree", "-z", &expected.head])
             .await?;
         if submodules::graph(&tree)? != submodules::graph(&current_tree)? {
-            tracing::warn!(event.name="gds.commits.refused",module="gds",scope="io",error.type="changed_submodule_graph",outcome="rejected");
+            tracing::warn!(event.name="github.commits.refused",module="github",scope="io",error.type="changed_submodule_graph",outcome="rejected");
             return Err(ModuleError::Unavailable);
         }
         // A branch switch during fetch must not authorize a different branch.

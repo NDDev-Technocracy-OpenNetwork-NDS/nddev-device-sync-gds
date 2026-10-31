@@ -152,8 +152,8 @@ pub(super) async fn submit(
         .await?;
     if matches!(result, RepositoryPublication::Queued { .. }) {
         tracing::info!(
-            event.name = "gds.catalog.conflict.queued",
-            module = "gds",
+            event.name = "github.catalog.conflict.queued",
+            module = "github",
             outcome = "ok"
         );
     }

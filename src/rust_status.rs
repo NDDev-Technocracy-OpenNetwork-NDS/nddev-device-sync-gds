@@ -26,21 +26,21 @@ pub struct WorkerEnvelope {
 }
 
 #[derive(Clone)]
-pub struct IsolatedGds {
+pub struct IsolatedGithub {
     io: ProcessIo,
     worker: PathBuf,
     timeout: Duration,
 }
-impl IsolatedGds {
+impl IsolatedGithub {
     /// Native composition supplies the installed worker from the verified NDS
     /// artifact. Presentation input supplies only a local checkout.
     pub fn new(io: ProcessIo, worker: PathBuf, timeout: Duration) -> Result<Self, ModuleError> {
         if !worker.is_absolute()
             || worker.file_name().is_none_or(|n| {
                 n != if cfg!(windows) {
-                    "nds-gds-readonly-worker.exe"
+                    "nds-github-readonly-worker.exe"
                 } else {
-                    "nds-gds-readonly-worker"
+                    "nds-github-readonly-worker"
                 }
             })
             || timeout.is_zero()
@@ -66,7 +66,7 @@ impl IsolatedGds {
     }
 }
 
-impl ReadGitStatus for IsolatedGds {
+impl ReadGitStatus for IsolatedGithub {
     type Checkout = Path;
     type Cancellation = CancellationToken;
     async fn read_git_status(
