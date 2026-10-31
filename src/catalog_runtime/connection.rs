@@ -16,6 +16,8 @@ impl CatalogClient {
                     return Err(GithubCatalogError::Cancelled);
                 }
                 location.validate().map_err(GithubCatalogError::from)?;
+                // Before any provider or Git I/O; an ignored owner is never cloned.
+                self.shared.refuse_ignored(&location)?;
                 #[cfg(all(feature = "commit-sync", any(target_os = "linux", target_os = "macos")))]
                 {
                     self.connect_native(location).await

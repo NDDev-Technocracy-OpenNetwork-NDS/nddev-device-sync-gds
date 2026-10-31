@@ -9,7 +9,7 @@ homepage = "https://nddev.ai"
 repository = "https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-github"
 
 [features]
-catalog-runtime = ["github-catalog", "dep:nddev-device-sync-accounts", "dep:nddev-device-sync-vault", "dep:uuid"]
+catalog-runtime = ["github-catalog", "dep:nddev-device-sync-accounts", "dep:nddev-device-sync-vault", "dep:uuid", "dep:serde-saphyr"]
 browser-bindings = ["catalog-runtime", "dep:tsify", "nddev-device-sync-accounts/browser-bindings", "nddev-device-sync-vault/browser-bindings"]
 default = []
 commit-sync = ["dep:base64", "dep:zeroize", "dep:tokio", "dep:tokio-util", "dep:tracing", "dep:nddev-device-sync-telemetry", "dep:tempfile", "dep:uuid"]
@@ -37,6 +37,7 @@ nddev-device-sync-adapter-io = { version = "=0.0.1-alpha.4", git = "https://gith
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 reqwest = { version = "0.13.3", default-features = false, features = ["rustls-no-provider", "gzip"], optional = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
+serde-saphyr = { version = "2.0.0", default-features = false, features = ["deserialize"], optional = true }
 tokio = { version = "1.53", features = ["time"], optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
