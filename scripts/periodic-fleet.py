@@ -20,6 +20,93 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 TEST = "catalog_runtime::fleet_acceptance::native_periodic_fleet_member"
+FEATURES = "catalog-runtime,commit-sync"
+
+
+def source_identity():
+    def git(*args):
+        return subprocess.check_output(["git", *args], cwd=ROOT, text=True, timeout=15).strip()
+    def digest(name):
+        return hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
+    return {"commit": git("rev-parse", "HEAD"), "tree": git("rev-parse", "HEAD^{tree}"),
+            "dirty": bool(git("status", "--porcelain")),
+            "lock_sha256": digest("Cargo.lock"),
+            "toolchain_sha256": digest("rust-toolchain.toml")}
+
+
+def build_member(output):
+    with (output / "build.log").open("x") as log:
+        built = subprocess.run(
+            ["cargo", "test", "--locked", "--features", FEATURES,
+             "--lib", "--no-run", "--message-format=json"], cwd=ROOT,
+            env=os.environ | {"CARGO_PROFILE_TEST_OPT_LEVEL": "3"},
+            stdout=subprocess.PIPE, stderr=log, text=True, check=True, timeout=600)
+    artifacts = [json.loads(line) for line in built.stdout.splitlines() if line.startswith("{")]
+    executables = [x["executable"] for x in artifacts if x.get("reason") == "compiler-artifact"
+                   and x.get("executable") and x.get("profile", {}).get("test")
+                   and x.get("target", {}).get("name") == "nddev_device_sync_gds"
+                   and x["target"].get("kind") == ["lib"]]
+    if len(executables) != 1:
+        raise ValueError("Expected exactly one owning GDS library test executable")
+    return Path(executables[0])
+
+
+def stage_member(source, output, expected=None):
+    staged = output / "native-fleet-member"
+    # Hash the copied bytes, rather than trusting a mutable Cargo cache path.
+    with source.open("rb") as binary, staged.open("xb") as target:
+        remaining = os.fstat(binary.fileno()).st_size
+        if not 0 < remaining <= 1024**3:
+            raise ValueError("Fleet member size is outside its bound")
+        while remaining:
+            chunk = binary.read(min(remaining, 1024 * 1024))
+            if not chunk:
+                raise ValueError("Fleet member changed while copying")
+            target.write(chunk)
+            remaining -= len(chunk)
+        if binary.read(1):
+            raise ValueError("Fleet member changed while copying")
+    with staged.open("rb") as binary:
+        digest = hashlib.file_digest(binary, "sha256").hexdigest()
+    if expected is not None and digest != expected:
+        raise ValueError("Fleet member bytes differ from the selected manifest")
+    staged.chmod(0o500)
+    return staged, digest
+
+
+def member_manifest(path, identity):
+    if path.stat().st_size > 65536:
+        raise ValueError("Fleet member manifest exceeds its bound")
+    value = json.loads(path.read_text())
+    if (value.get("schema") != 1 or value.get("source") != identity or identity["dirty"]
+            or value.get("features") != FEATURES or value.get("test") != TEST
+            or value.get("executable") != "native-fleet-member"
+            or not re.fullmatch(r"[0-9a-f]{64}", value.get("executable_sha256", ""))):
+        raise ValueError("Fleet member manifest differs from the clean selected source/profile")
+    return value
+
+
+def prepare_member():
+    parser = argparse.ArgumentParser(description="Freeze the owning Linux fleet test artifact; starts no application")
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args(sys.argv[2:])
+    if (sys.platform != "linux" or not args.output.is_absolute() or args.output.exists()
+            or args.output.resolve().is_relative_to(ROOT)):
+        parser.error("requires a new absolute Linux artifact directory outside source")
+    identity = source_identity()
+    if identity["dirty"]:
+        parser.error("artifact preparation requires clean committed source")
+    args.output.mkdir(mode=0o700, parents=True)
+    executable, digest = stage_member(build_member(args.output), args.output)
+    if source_identity() != identity:
+        raise ValueError("Source changed while preparing the fleet member")
+    value = {"schema": 1, "source": identity, "features": FEATURES, "test": TEST,
+             "executable": executable.name, "executable_sha256": digest,
+             "rustc": subprocess.check_output(["rustc", "-vV"], cwd=ROOT, text=True, timeout=15)}
+    with (args.output / "member.json").open("x") as manifest:
+        json.dump(value, manifest, indent=2)
+        manifest.write("\n")
+    print("Fleet member frozen; source/profile and bytes must be verified by the native consumer", flush=True)
 
 
 def worker(root, executable, output):
@@ -83,6 +170,8 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--work-root", type=Path, required=True,
                         help="Existing admitted native fixture directory outside the source tree; no HOME fallback")
+    parser.add_argument("--member-manifest", type=Path,
+                        help="Previously frozen member.json for this exact clean source; skips Cargo on the app host")
     parser.add_argument("--clients", type=int, choices=range(2, 33), default=32, metavar="2..32")
     parser.add_argument("--repositories", type=int, choices=range(2, 1025), default=1024, metavar="2..1024")
     parser.add_argument("--guard-contention", action="store_true", help="Also exercise real SQLite admission pressure against the original proof")
@@ -94,6 +183,14 @@ def main():
     assert args.work_root.is_absolute() and args.work_root.is_dir()
     args.work_root = args.work_root.resolve(strict=True)
     assert not args.work_root.is_relative_to(ROOT)
+    # Refuse stale source/profile before reading or stopping the owned fixture.
+    args.identity = source_identity()
+    args.member = None
+    if args.member_manifest is not None:
+        if not args.member_manifest.is_absolute():
+            parser.error("member manifest must be an explicit absolute path")
+        args.member = member_manifest(args.member_manifest, args.identity)
+    args.staged, args.executable_sha256 = prepare_execution(args)
     receipt = json.loads(args.fixture.read_text())
     assert receipt["status"] == "running" and receipt["owner_email"].endswith(".invalid")
     for name in ("control_file", "stop_marker"):
@@ -104,31 +201,34 @@ def main():
         Path(receipt["stop_marker"]).touch()
 
 
-def qualify(args, receipt):
+def prepare_execution(args):
+    """Resolve and check bytes before acquiring the Server fixture lifetime."""
     args.output.mkdir(mode=0o700, parents=True)
-    source = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-    dirty = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT))
+    dirty = args.identity["dirty"]
     full = args.clients == 32 and args.repositories == 1024
     assert not (full and dirty), "Full qualification requires committed source"
     assert shutil.disk_usage(args.output).free >= (16 if full else 4) * 1024**3
-    with (args.output / "build.log").open("x") as log:
-        built = subprocess.run(
-            ["cargo", "test", "--locked", "--features", "catalog-runtime,commit-sync",
-             "--lib", "--no-run", "--message-format=json"], cwd=ROOT,
-            env=os.environ | {"CARGO_PROFILE_TEST_OPT_LEVEL": "3"},
-            stdout=subprocess.PIPE, stderr=log, text=True, check=True, timeout=600)
-    artifacts = [json.loads(line) for line in built.stdout.splitlines() if line.startswith("{")]
-    executables = [x["executable"] for x in artifacts if x.get("reason") == "compiler-artifact"
-                   and x.get("executable") and x.get("profile", {}).get("test")]
-    assert len(executables) == 1
     # Both process epochs must execute the same qualified bytes, independently
     # of subsequent Cargo builds or managed-cache retirement.
-    staged = args.output / "native-fleet-member"
-    with Path(executables[0]).open("rb") as source_binary, staged.open("xb") as target_binary:
-        shutil.copyfileobj(source_binary, target_binary, length=1024 * 1024)
-    staged.chmod(0o500)
-    with staged.open("rb") as binary:
-        executable_sha256 = hashlib.file_digest(binary, "sha256").hexdigest()
+    if args.member is None:
+        staged, executable_sha256 = stage_member(build_member(args.output), args.output)
+    else:
+        staged, executable_sha256 = stage_member(
+            args.member_manifest.parent / args.member["executable"], args.output,
+            args.member["executable_sha256"])
+    if source_identity() != args.identity:
+        raise ValueError("Source changed before fleet startup")
+    listed = subprocess.run([str(staged), "--exact", TEST, "--ignored", "--list"],
+                            capture_output=True, text=True, check=True, timeout=15)
+    if listed.stdout.splitlines() != [f"{TEST}: test", "", "1 test, 0 benchmarks"]:
+        raise ValueError("Selected executable does not contain the exact owning fleet test")
+    return staged, executable_sha256
+
+
+def qualify(args, receipt):
+    source, dirty = args.identity["commit"], args.identity["dirty"]
+    full = args.clients == 32 and args.repositories == 1024
+    staged, executable_sha256 = args.staged, args.executable_sha256
     executable = str(staged)
     deadline = time.monotonic() + min(14300, receipt["expires_at_unix"] - time.time() - 10)
     if full:
@@ -442,6 +542,8 @@ def qualify(args, receipt):
                 "fixture_work_root": str(scratch),
                 "native_executable": staged.name,
                 "native_executable_sha256": executable_sha256,
+                "member_prebuilt": args.member is not None,
+                "source_identity": args.identity,
                 "repositories": args.repositories, "distinct_devices": len(identities),
                 "scope": "Actual elected Rust GDS/Vault lifetimes, isolated native credentials, "
                          "genuine session, SQLite, NDS HTTP/PostgreSQL and Git. Generated loopback "
@@ -482,5 +584,7 @@ def qualify(args, receipt):
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--worker":
         worker(*sys.argv[2:])
+    elif len(sys.argv) > 1 and sys.argv[1] == "prepare-member":
+        prepare_member()
     else:
         main()
