@@ -203,6 +203,20 @@ the fixed-origin GitHub acceptance remains separate. Only the test executable
 contains the fixture transport and workspace selectors. No installed runtime,
 personal credential store or existing checkout is used.
 
+To prepare immutable member bytes separately from application execution, use
+`python3 scripts/periodic-fleet.py prepare-member --output /absolute/new-artifact-directory`
+on the assigned code-check host with clean committed source and its managed Cargo
+profile. Deliver that directory through the existing native artifact route.
+Pass `--member-manifest /absolute/artifact-directory/member.json` to the ordinary
+fleet command on the admitted application host. This skips Cargo there and
+requires the exact same clean Git commit/tree, lock, toolchain selection, features,
+test name and copied executable SHA256. Before acquiring the Server fixture
+lifetime it verifies the executable contains the exact ignored test using
+`--list`; both process epochs then use those frozen bytes. An invalid artifact
+leaves the Server fixture untouched. The manifest proves selected inputs and
+integrity; execution authority, native ABI compatibility, resource/lease admission
+and actual fleet outcomes remain the native owner's separate evidence.
+
 Each round must produce a fresh terminal observation for every connection;
 temporary admission/dependency refusals remain explicit in the receipt. Every
 clean fixture repository must produce a successful in-scope result during the
