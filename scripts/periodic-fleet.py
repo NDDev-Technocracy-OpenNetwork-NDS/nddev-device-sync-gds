@@ -29,7 +29,7 @@ def source_identity():
     def digest(name):
         return hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
     return {"commit": git("rev-parse", "HEAD"), "tree": git("rev-parse", "HEAD^{tree}"),
-            "dirty": bool(git("status", "--porcelain")),
+            "dirty": bool(git("status", "--porcelain", "--untracked-files=all")),
             "lock_sha256": digest("Cargo.lock"),
             "toolchain_sha256": digest("rust-toolchain.toml")}
 

@@ -72,6 +72,16 @@ class MemberArtifact(unittest.TestCase):
         with self.assertRaises(ValueError):
             fleet.member_manifest(self.manifest, fleet.source_identity())
 
+    def test_user_status_preferences_cannot_hide_untracked_build_inputs(self):
+        subprocess.run(["git", "config", "status.showUntrackedFiles", "no"],
+                       cwd=self.source, check=True)
+        (self.source / "untracked-build-input.rs").write_text("generated input")
+        self.assertEqual(subprocess.check_output(["git", "status", "--porcelain"],
+                                                cwd=self.source, text=True), "")
+        self.assertTrue(fleet.source_identity()["dirty"])
+        with self.assertRaises(ValueError):
+            fleet.member_manifest(self.manifest, fleet.source_identity())
+
     def test_wrong_feature_test_schema_and_path_cannot_select_another_member(self):
         for key, value in [("schema", 2), ("features", "commit-sync"), ("test", "another_test"),
                            ("executable", "../other"), ("executable_sha256", "not-a-digest")]:
