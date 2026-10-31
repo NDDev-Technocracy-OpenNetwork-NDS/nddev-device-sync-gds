@@ -5,6 +5,8 @@
 pub mod catalog_runtime;
 #[cfg(feature = "github-catalog")]
 pub mod github;
+#[cfg(all(feature = "catalog-runtime", not(target_arch = "wasm32")))]
+pub mod ignore;
 pub mod view;
 pub use view::*;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]

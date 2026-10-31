@@ -26,6 +26,9 @@ impl CatalogClient {
         if cancellation.is_cancelled() {
             return Err(GithubCatalogError::Cancelled);
         }
+        // An existing connection of an ignored owner keeps its checkout and
+        // registration; it is reported refused instead of synchronized.
+        self.shared.refuse_ignored(location)?;
         self.restore_catalog_source(&flight).await?;
         let guard = match original {
             Some(original) => {

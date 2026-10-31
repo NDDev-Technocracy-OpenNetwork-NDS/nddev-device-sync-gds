@@ -376,6 +376,7 @@ fn module_error(error: GithubCatalogError) -> nddev_device_sync_domain::modules:
 }
 struct CatalogPort {
     cache: Arc<crate::github::CatalogCache>,
+    shared: Arc<super::CatalogResources>,
     source_operation: String,
     caller: Arc<IdentityClient>,
     caller_fence: Arc<LocalUseFence>,
@@ -430,6 +431,9 @@ impl ReadGithubCatalogPage for CatalogPort {
         cancellation: &CancellationToken,
     ) -> Result<ProviderRepositoryPage, GithubCatalogError> {
         self.guard.check()?;
+        // Read the owner's ignore list before any provider I/O: a list that
+        // cannot be validated refuses the page instead of including anything.
+        let ignored = self.shared.ignore_snapshot()?;
         self.guard
             .identity
             .validate_local_use(&self.guard.fence)
@@ -458,7 +462,13 @@ impl ReadGithubCatalogPage for CatalogPort {
             cancellation,
             move || revalidation(callback_guard.clone(), callback_error.clone()),
         )
-        .await;
+        .await
+        .map(|mut page| {
+            // Ignored owners are dropped before Core prepares any observation.
+            // Page numbers and continuation stay the provider's.
+            ignored.retain_included(&mut page.repositories);
+            page
+        });
         if guard_error
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -492,6 +502,8 @@ pub fn caller_error(error: &GithubCatalogError) -> (String, &'static str, bool) 
         E::ProviderFailed => ("provider_failed", "error", true),
         E::InvalidResponse => ("invalid_response", "error", true),
         E::CapacityExhausted => ("sync_capacity_exhausted", "rejected", false),
+        E::AccountIgnored => ("account_ignored", "rejected", false),
+        E::IgnoreListInvalid => ("ignore_list_invalid", "error", true),
     };
     (class.into(), outcome, failure)
 }
@@ -627,6 +639,7 @@ impl CatalogClient {
         }
         let port = CatalogPort {
             cache: self.shared.cache.clone(),
+            shared: self.shared.clone(),
             source_operation,
             caller: self.caller.clone(),
             caller_fence,
@@ -982,7 +995,8 @@ impl CatalogClient {
                         self.shared_identity().validate_local_use(&fence).await?;
                         flight.check()?;
                         self.caller.validate_local_use(&caller_fence).await?;
-                        let mut view = project_saved_page(groups, page.observed_seq, page.local_revision, page.next.is_some());
+                        let ignored = self.shared.ignore_snapshot()?;
+                        let mut view = project_saved_page(groups, page.observed_seq, page.local_revision, page.next.is_some(), |id, login| ignored.ignores(id, login));
                         let source = self.vault.github_source().await?;
                         let consent = self.vault.module_configuration("github").await?;
                         // Validate the ORIGINAL read, not a fresh replacement.
