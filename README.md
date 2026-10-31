@@ -207,6 +207,14 @@ the fixed-origin GitHub acceptance remains separate. Only the test executable
 contains the fixture transport and workspace selectors. No installed runtime,
 personal credential store or existing checkout is used.
 
+Concurrent Vault canaries keep one 45-second admission/acknowledgement bound.
+They retry only the pinned Vault's known pre-commit `Busy` refusal with the same
+record ID and CAS; a successful mutation is never submitted again. Read-only
+acknowledgement polling may also report `Busy`. Unknown writes, other errors and
+deadlines fail the case. Write/read contention is recorded separately, and
+`--guard-contention` requires actual owned SQLite pressure before a real canary
+acknowledgement, alongside the original-proof checks above.
+
 To prepare immutable member bytes separately from application execution, use
 `python3 scripts/periodic-fleet.py prepare-member --output /absolute/new-artifact-directory`
 on the assigned code-check host with clean committed source and its managed Cargo

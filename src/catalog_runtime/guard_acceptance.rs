@@ -4,9 +4,9 @@ use super::*;
 use std::io::{BufRead, Write};
 use std::process::{Child, Stdio};
 
-struct LockedDatabase(Option<Child>);
+pub(super) struct LockedDatabase(Option<Child>);
 impl LockedDatabase {
-    fn acquire(database: PathBuf) -> Result<Self> {
+    pub(super) fn acquire(database: PathBuf) -> Result<Self> {
         let mut held = Self(Some(Command::new("python3")
             .args(["-I", "-c", "import sqlite3,sys; c=sqlite3.connect(sys.argv[1],timeout=.5); c.execute('BEGIN IMMEDIATE'); print('locked',flush=True); sys.stdin.buffer.read(1); c.rollback()"])
             .arg(database).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()?));
@@ -18,7 +18,7 @@ impl LockedDatabase {
         }
         Ok(held)
     }
-    async fn release(mut self) -> Result<()> {
+    pub(super) async fn release(mut self) -> Result<()> {
         self.0
             .as_mut()
             .unwrap()

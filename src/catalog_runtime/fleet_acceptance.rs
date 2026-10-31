@@ -30,6 +30,8 @@ use zeroize::Zeroizing;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
+#[path = "canary_acceptance.rs"]
+mod canary_acceptance;
 #[path = "guard_acceptance.rs"]
 mod guard_acceptance;
 
@@ -629,19 +631,14 @@ async fn run_member() -> Result<()> {
                         Ok(json!({"published": expected}))
                     }
                     "canary" => {
-                        let started = std::time::Instant::now();
-                        let id = format!("online-canary-{index}");
-                        vault.save_record(Some(id.clone()), 0, None, "Generated concurrent Vault canary".into(),
-                            String::new(), Zeroizing::new("SYNTHETIC_ONLINE_FLEET_VALUE".into())).await?;
-                        tokio::time::timeout(Duration::from_secs(45), async {
-                            loop {
-                                if vault.records(String::new()).await?.items.iter().any(|record|
-                                    record.id == id && record.pending_id.is_none() && record.revision > 0) { break; }
-                                tokio::time::sleep(Duration::from_millis(100)).await;
-                            }
-                            Ok::<(), nddev_device_sync_vault::Error>(())
-                        }).await??;
-                        Ok(json!({"acknowledged":true,"milliseconds":started.elapsed().as_millis()}))
+                        let database = command.get("database").and_then(Value::as_str)
+                            .map(PathBuf::from).map(|path| path.canonicalize()).transpose()?;
+                        if let Some(path) = &database {
+                            assert_eq!(index, 0);
+                            assert!(path.starts_with(root.join("replica").canonicalize()?));
+                            assert!(path.is_file() && path.extension().is_some_and(|e| e == "db"));
+                        }
+                        canary_acceptance::run(identity.clone(), vault.clone(), index, database).await
                     }
                     "wait" => {
                         let runtime = catalog.as_ref().ok_or("missing runtime")?;
