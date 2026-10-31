@@ -270,7 +270,12 @@ def qualify(args, receipt):
 
     def all_clients(action, **facts):
         for index in range(args.clients):
-            send(index, action, **facts)
+            if action == "canary" and args.guard_contention and index == 0:
+                files = list((base / "0/replica").rglob("*.db"))
+                assert len(files) == 1
+                send(index, action, database=str(files[0]), **facts)
+            else:
+                send(index, action, **facts)
         result = []
         for index in range(args.clients):
             result.append(read(connections[index]))
@@ -477,6 +482,9 @@ def qualify(args, receipt):
                 assert read(connections[index])["started"]
             canaries = all_clients("canary")
             assert all(value["acknowledged"] for value in canaries)
+            if args.guard_contention:
+                assert canaries[0]["actual_sqlite_pressure"]
+                assert canaries[0]["write_busy"] + canaries[0]["read_busy"] > 0
             qualify_round(boundary, head)
             assert dirty_witnesses() == dirty_before
             # A second complete observation uses the production 300-second round
