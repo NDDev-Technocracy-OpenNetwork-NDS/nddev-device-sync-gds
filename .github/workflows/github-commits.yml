@@ -10,6 +10,10 @@ concurrency:
   group: github-commit-acceptance
   cancel-in-progress: false
 
+env:
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+
 jobs:
   github-commits:
     if: github.ref == 'refs/heads/main'
@@ -23,6 +27,12 @@ jobs:
           persist-credentials: false
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.99.1 --profile minimal
+      - name: Restore the Cargo dependency and tool cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: github-commits
+          add-job-id-key: "false"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install Linux credential-store build inputs
         run: |
           sudo apt-get update
@@ -37,11 +47,11 @@ jobs:
       - name: Qualify actual GitHub metadata and existing commits
         run: python3 scripts/check-github-commits.py run "$RUNNER_TEMP/nds-github-test.jsonl"
         env:
-          NDS_GDS_ACCEPTANCE_TOKEN: ${{ github.token }}
-          NDS_GDS_REPOSITORY_ID: ${{ github.repository_id }}
-          NDS_GDS_OWNER_ID: ${{ github.repository_owner_id }}
+          NDS_GITHUB_ACCEPTANCE_TOKEN: ${{ github.token }}
+          NDS_GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+          NDS_GITHUB_OWNER_ID: ${{ github.repository_owner_id }}
       - name: Confirm owned branch cleanup
         if: always()
         run: python3 scripts/check-github-commits.py cleanup "$RUNNER_TEMP/nds-github-test.jsonl"
         env:
-          NDS_GDS_ACCEPTANCE_TOKEN: ${{ github.token }}
+          NDS_GITHUB_ACCEPTANCE_TOKEN: ${{ github.token }}
