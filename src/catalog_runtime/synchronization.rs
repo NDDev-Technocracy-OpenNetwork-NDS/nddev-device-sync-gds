@@ -8,6 +8,7 @@ impl CatalogClient {
     pub(in crate::catalog_runtime) async fn synchronize_connection(
         &self,
         location: &CheckoutLocation,
+        original: Option<Arc<CatalogUseGuard>>,
         cancellation: &CancellationToken,
     ) -> Result<CommitOutcome, GithubCatalogError> {
         #[cfg(all(test, target_os = "linux", feature = "commit-sync"))]
@@ -25,18 +26,35 @@ impl CatalogClient {
         if cancellation.is_cancelled() {
             return Err(GithubCatalogError::Cancelled);
         }
-        let caller = Arc::new(self.caller.local_use_fence().await?);
         self.restore_catalog_source(&flight).await?;
-        let source = self
-            .catalog
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .source_operation
-            .clone()
-            .ok_or(GithubCatalogError::InvalidInput)?;
-        let guard = self
-            .capture_use(&flight, &source, write_permissions(), caller, None)
-            .await?;
+        let guard = match original {
+            Some(original) => {
+                // Effects and observations use the same opaque read. A guard
+                // from another facade or cancelled catalog lifetime cannot be
+                // rebound to this flight, even when its source ID is unchanged.
+                if !Arc::ptr_eq(&original.lifetime, &flight.lifetime)
+                    || !Arc::ptr_eq(&original.identity, &self.identity)
+                    || !Arc::ptr_eq(&original.vault, &self.vault)
+                {
+                    return Err(GithubCatalogError::Cancelled);
+                }
+                original
+            }
+            None => {
+                let caller = Arc::new(self.caller.local_use_fence().await?);
+                let source = self
+                    .catalog
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .source_operation
+                    .clone()
+                    .ok_or(GithubCatalogError::InvalidInput)?;
+                Arc::new(
+                    self.capture_use(&flight, &source, write_permissions(), caller, None)
+                        .await?,
+                )
+            }
+        };
         guard.validate().await?;
         {
             let mut progress = self
@@ -44,11 +62,16 @@ impl CatalogClient {
                 .commits
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            // Keep the original scope witness. Replacing it with a fresh read
-            // would silently rebind old results after a same-ID coalesced edit.
-            progress
-                .guard
-                .get_or_insert_with(|| Arc::new(guard.clone()));
+            flight.check()?;
+            if cancellation.is_cancelled()
+                || progress
+                    .guard
+                    .as_ref()
+                    .is_some_and(|current| !Arc::ptr_eq(current, &guard))
+            {
+                return Err(GithubCatalogError::Cancelled);
+            }
+            progress.guard.get_or_insert_with(|| guard.clone());
             if let Some(epoch) = progress.epoch.clone() {
                 progress.record(
                     &epoch,
@@ -94,7 +117,7 @@ impl CatalogClient {
                         let errors = errors.clone();
                         let location = location.clone();
                         async move {
-                            revalidation(guard.clone(), errors).await?;
+                            revalidation(guard.as_ref().clone(), errors).await?;
                             let current = guard
                                 .vault
                                 .repository_connection(location.repository_id)

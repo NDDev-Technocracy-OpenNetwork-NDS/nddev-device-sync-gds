@@ -180,9 +180,13 @@ its own authorized isolated user-account fixture.
 Temporary proof-validation failures retain the exact original witness and
 traversal progress. They admit no further Git operation or successful outcome;
 saved views still validate that witness before exposing progress. Known scope
-changes continue to discard it. `--guard-contention` additionally checks both
-validation boundaries against a real SQLite write lock and verifies that an
-actual module disable still clears the scope.
+changes continue to discard it. Periodic effects also use that original opaque
+read within its owning background catalog lifetime, revalidating it at every
+provider, Git and completion boundary. They do not capture all repository
+baselines again for each connection. Foreground connections keep independent
+captures. `--guard-contention` checks both validation boundaries against a real
+SQLite write lock, rejects borrowed or cancelled catalog witnesses, and verifies
+that an actual disable clears the scope and re-enabling requires a new read.
 
 The opt-in Linux `scripts/periodic-fleet.py` accepts an owned Server
 `--fixture-sync3` receipt, a new output directory and an explicit

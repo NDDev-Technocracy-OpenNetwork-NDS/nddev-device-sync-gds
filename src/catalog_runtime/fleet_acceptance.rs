@@ -45,6 +45,7 @@ pub(super) struct FixtureIo {
     remotes: PathBuf,
     validation_pause: Mutex<Option<Arc<ValidationPause>>>,
     timings: Mutex<[[u64; 3]; 3]>,
+    captured_reads: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Clone, Copy)]
@@ -72,6 +73,16 @@ impl Drop for TimingSpan {
     }
 }
 impl FixtureIo {
+    pub(super) fn record_captured_read(&self) {
+        self.captured_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub(super) fn captured_reads(&self) -> u64 {
+        self.captured_reads
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     pub(super) fn timing(self: &Arc<Self>, stage: TimingStage) -> TimingSpan {
         TimingSpan {
             io: self.clone(),
@@ -495,6 +506,7 @@ async fn run_member() -> Result<()> {
         remotes: PathBuf::from(std::env::var("NDS_GIT_FLEET_REMOTES")?).canonicalize()?,
         validation_pause: Mutex::new(None),
         timings: Mutex::default(),
+        captured_reads: std::sync::atomic::AtomicU64::new(0),
     });
     let view = identity.view();
     reply(
@@ -590,6 +602,7 @@ async fn run_member() -> Result<()> {
                     }
                     "start" => {
                         assert!(owner.is_none());
+                        io.captured_reads.store(0, std::sync::atomic::Ordering::Relaxed);
                         let retained =
                             NativeReplica::attach(&identity, root.join("replica"), None).await?;
                         let source = vault.github_source().await?;
@@ -715,9 +728,11 @@ async fn run_member() -> Result<()> {
                             }
                             tokio::time::sleep(Duration::from_millis(500)).await;
                         };
+                        let captured_reads = io.captured_reads();
+                        assert_eq!(captured_reads, 1, "periodic effects must retain their original read");
                         let facts = json!({"observed":repositories,"head":expected,"dirty_preserved":true,
                             "dirty_refusal_observed":dirty_refusal,"successful_repository_ids":successful,
-                            "terminal_outcomes":terminal_outcomes});
+                            "terminal_outcomes":terminal_outcomes,"scope_captured_reads":captured_reads});
                         // Preserve a completed member observation if another
                         // member later fails. Only the final fleet receipt
                         // establishes whole-profile qualification.

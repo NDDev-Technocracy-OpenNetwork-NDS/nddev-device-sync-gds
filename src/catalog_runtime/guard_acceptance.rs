@@ -149,13 +149,33 @@ pub(super) async fn probe(
     let source = vault.github_source().await?;
     let consent = vault.module_configuration("gds").await?;
     let selected = Arc::new(runtime(
-        identity,
+        identity.clone(),
         vault.clone(),
         io.clone(),
         (source.operation_id, consent.operation_id),
     ));
     let token = selected.collection.lock().unwrap().clone();
+    let before = io.captured_reads();
     selected.collect_commits(&token).await?;
+    let original = selected
+        .shared
+        .commits
+        .lock()
+        .unwrap()
+        .guard
+        .clone()
+        .unwrap();
+    let other_facade = selected.foreground(identity);
+    let foreign_rejected = matches!(
+        other_facade
+            .synchronize_connection(&location(1), Some(original.clone()), &token)
+            .await,
+        Err(view::GithubCatalogError::Cancelled)
+    );
+    assert!(
+        foreign_rejected,
+        "another facade cannot borrow a retained read"
+    );
     let mut phases = Vec::new();
     for after in [false, true] {
         let facts = phase(
@@ -182,6 +202,11 @@ pub(super) async fn probe(
             return Ok(json!({"passed":false,"phases":phases}));
         }
     }
+    let same_scope_captures = io.captured_reads() - before;
+    assert_eq!(
+        same_scope_captures, 1,
+        "contention retries cannot recapture the scope"
+    );
     let setting = vault.module_configuration("gds").await?;
     vault
         .set_module_configuration(
@@ -217,6 +242,36 @@ pub(super) async fn probe(
         )
         .await?;
     settle(&vault).await?;
+    assert!(original.validate().await.is_err());
+    assert!(selected.collect_commits(&token).await?);
+    let replacement = selected
+        .shared
+        .commits
+        .lock()
+        .unwrap()
+        .guard
+        .clone()
+        .unwrap();
+    let renewed = !Arc::ptr_eq(&original, &replacement)
+        && replacement.validate().await.is_ok()
+        && io.captured_reads() - before == 2;
+    assert!(renewed, "a new consent scope requires its own fresh read");
     selected.cancel();
-    Ok(json!({"passed":cleared,"phases":phases,"actual_disable_clears_scope":cleared}))
+    let cancelled_rejected = matches!(
+        selected
+            .background
+            .synchronize_connection(&location(1), Some(replacement), &CancellationToken::new())
+            .await,
+        Err(view::GithubCatalogError::Cancelled)
+    );
+    assert!(
+        cancelled_rejected,
+        "a new flight cannot revive a cancelled read"
+    );
+    Ok(
+        json!({"passed":cleared && renewed && foreign_rejected && cancelled_rejected,"phases":phases,"actual_disable_clears_scope":cleared,
+        "same_scope_captured_reads":same_scope_captures,"original_read_retained_for_effects":true,
+        "original_proof_rejected_after_reenable":true,"reenabled_scope_captures_new_read":renewed,
+        "other_facade_read_rejected":foreign_rejected,"cancelled_lifetime_read_rejected":cancelled_rejected}),
+    )
 }
