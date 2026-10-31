@@ -1,6 +1,6 @@
 use super::reader::{Limits, inspect};
 use nddev_device_sync_domain::modules::ModuleError;
-use nddev_device_sync_gds::rust_status::{MEMORY_BYTES, OUTPUT_BYTES, PROFILE, WorkerEnvelope};
+use nddev_device_sync_github::rust_status::{MEMORY_BYTES, OUTPUT_BYTES, PROFILE, WorkerEnvelope};
 use std::{
     io::{self, Write},
     path::PathBuf,

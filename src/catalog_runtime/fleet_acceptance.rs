@@ -398,7 +398,7 @@ async fn seed(identity: &IdentityClient, vault: &VaultClient, count: usize) -> R
         .await?;
     vault
         .set_module_configuration(
-            "gds".into(),
+            "github".into(),
             0,
             None,
             Configuration {
@@ -484,13 +484,13 @@ async fn run_member() -> Result<()> {
     let mut logger = nddev_device_sync_telemetry::install(nddev_device_sync_telemetry::Config {
         service: "nds-git-fleet-acceptance".into(),
         version: env!("CARGO_PKG_VERSION").into(),
-        repository: "NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-gds".into(),
+        repository: "NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-github".into(),
         commit: std::env::var("NDS_FLEET_SOURCE")?,
         channel: "alpha".into(),
         standards: "unreleased".into(),
         environment: "development".into(),
-        target_prefixes: vec!["nds_accounts".into(), "nddev_device_sync_gds".into()],
-        default_module: "gds".into(),
+        target_prefixes: vec!["nds_accounts".into(), "nddev_device_sync_github".into()],
+        default_module: "github".into(),
         debug: None,
     })?;
     let stream = UnixStream::connect(std::env::var("NDS_FLEET_SOCKET")?).await?;
@@ -585,7 +585,7 @@ async fn run_member() -> Result<()> {
                     }
                     "connect" => {
                         settle(&vault).await?;
-                        let setting = vault.module_configuration("gds").await?;
+                        let setting = vault.module_configuration("github").await?;
                         if setting.configuration
                             != (Configuration {
                                 enabled: true,
@@ -594,7 +594,7 @@ async fn run_member() -> Result<()> {
                         {
                             vault
                                 .set_module_configuration(
-                                    "gds".into(),
+                                    "github".into(),
                                     setting.revision,
                                     setting.pending_id,
                                     Configuration {
@@ -606,7 +606,7 @@ async fn run_member() -> Result<()> {
                             settle(&vault).await?;
                         }
                         let source = vault.github_source().await?;
-                        let consent = vault.module_configuration("gds").await?;
+                        let consent = vault.module_configuration("github").await?;
                         let client = runtime(
                             identity.clone(),
                             vault.clone(),
@@ -650,7 +650,7 @@ async fn run_member() -> Result<()> {
                             &[
                                 "commit",
                                 "-qm",
-                                "test(gds): generated existing fleet commit",
+                                "test(github): generated existing fleet commit",
                             ],
                         )?;
                         Ok(json!({"head":git(&path,&["rev-parse","HEAD"])?}))
@@ -661,7 +661,7 @@ async fn run_member() -> Result<()> {
                         let retained =
                             NativeReplica::attach(&identity, root.join("replica"), None).await?;
                         let source = vault.github_source().await?;
-                        let consent = vault.module_configuration("gds").await?;
+                        let consent = vault.module_configuration("github").await?;
                         let selected = retained.catalog(|identity, vault| {
                             runtime(
                                 identity,

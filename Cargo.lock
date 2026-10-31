@@ -2928,7 +2928,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nddev-device-sync-gds"
+name = "nddev-device-sync-github"
 version = "0.0.1-alpha.7"
 dependencies = [
  "base64 0.23.1",

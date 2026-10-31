@@ -2,7 +2,7 @@
 use nddev_device_sync_adapter_io::{CancellationToken, NativeIo};
 use nddev_device_sync_application::repositories::ReadGitStatus;
 use nddev_device_sync_domain::{modules::ModuleError, repositories::*};
-use nddev_device_sync_gds::rust_status::{IsolatedGds, MEMORY_BYTES};
+use nddev_device_sync_github::rust_status::{IsolatedGithub, MEMORY_BYTES};
 use std::{
     path::{Path, PathBuf},
     process::Command,
@@ -46,10 +46,10 @@ fn fixture() -> tempfile::TempDir {
     git(root.path(), &["commit", "-qm", "fixture"]);
     root
 }
-fn reader(timeout: Duration) -> IsolatedGds {
-    IsolatedGds::new(
+fn reader(timeout: Duration) -> IsolatedGithub {
+    IsolatedGithub::new(
         NativeIo::new(1).unwrap().process_handle(),
-        PathBuf::from(env!("CARGO_BIN_EXE_nds-gds-readonly-worker")),
+        PathBuf::from(env!("CARGO_BIN_EXE_nds-github-readonly-worker")),
         timeout,
     )
     .unwrap()
@@ -70,7 +70,7 @@ fn worker_pid(root: &Path) -> Option<u32> {
         let args = args.split(|b| *b == 0).collect::<Vec<_>>();
         if args
             .first()
-            .is_some_and(|v| *v == env!("CARGO_BIN_EXE_nds-gds-readonly-worker").as_bytes())
+            .is_some_and(|v| *v == env!("CARGO_BIN_EXE_nds-github-readonly-worker").as_bytes())
             && args.get(2) == Some(&path)
         {
             return Some(pid);

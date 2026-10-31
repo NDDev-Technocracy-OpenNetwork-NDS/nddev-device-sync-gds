@@ -263,7 +263,7 @@ impl Drop for Flight<'_> {
     }
 }
 
-/// This exact guard is the callback required inside GDS before EACH provider GET
+/// This exact guard is the callback required inside the GitHub module before EACH provider GET
 /// and final return, within its overall deadline; an outer recheck is insufficient.
 #[derive(Clone)]
 pub(super) struct CatalogUseGuard {
@@ -704,8 +704,8 @@ impl CatalogClient {
             if restart {
                 state.rewind();
                 tracing::info!(
-                    event.name = "gds.catalog.traversal.restart",
-                    module = "gds",
+                    event.name = "github.catalog.traversal.restart",
+                    module = "github",
                     outcome = "stopped"
                 );
             }
@@ -916,7 +916,7 @@ impl CatalogClient {
         &self,
         after: String,
     ) -> Result<GithubCredentialReferencePage, GithubCatalogError> {
-        super::observe("gds", "gds.catalog.credentials.read", async {
+        super::observe("github", "github.catalog.credentials.read", async {
             let flight = self.catalog_flight()?;
             let result = runtime::timeout(Duration::from_secs(10), async {
                 tokio::select! { biased;
@@ -948,7 +948,7 @@ impl CatalogClient {
         &self,
         next_page: bool,
     ) -> Result<GithubSavedRepositoryPageView, GithubCatalogError> {
-        super::observe("gds", "gds.catalog.saved.read", async {
+        super::observe("github", "github.catalog.saved.read", async {
             let flight = self.catalog_flight()?;
             let caller_fence = self.caller.local_use_fence().await?;
             flight.check()?;
@@ -984,7 +984,7 @@ impl CatalogClient {
                         self.caller.validate_local_use(&caller_fence).await?;
                         let mut view = project_saved_page(groups, page.observed_seq, page.local_revision, page.next.is_some());
                         let source = self.vault.github_source().await?;
-                        let consent = self.vault.module_configuration("gds").await?;
+                        let consent = self.vault.module_configuration("github").await?;
                         // Validate the ORIGINAL read, not a fresh replacement.
                         // Coalescing an undispatched Vault edit can preserve IDs
                         // while changing the encrypted source/credential/consent.
@@ -1029,8 +1029,8 @@ impl CatalogClient {
         next_page: bool,
     ) -> Result<GithubRepositoryPageView, GithubCatalogError> {
         super::observe(
-            "gds",
-            "gds.catalog.page.read",
+            "github",
+            "github.catalog.page.read",
             async {
                 let _provider = self.shared
                     .admission

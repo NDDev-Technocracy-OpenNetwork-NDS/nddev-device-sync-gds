@@ -49,7 +49,7 @@ class Handler(BaseHTTPRequestHandler):
 
 fixture = ThreadingHTTPServer(('127.0.0.1', 19483), Handler)
 threading.Thread(target=fixture.serve_forever, daemon=True).start()
-with tempfile.TemporaryDirectory(prefix='nds-gds-browser-') as temporary:
+with tempfile.TemporaryDirectory(prefix='nds-github-browser-') as temporary:
     log = Path(temporary) / 'runner.log'
     with log.open('w') as output:
         runner = subprocess.Popen([str(args.runner.resolve()), str(args.wasm.resolve()), '--nocapture'],
