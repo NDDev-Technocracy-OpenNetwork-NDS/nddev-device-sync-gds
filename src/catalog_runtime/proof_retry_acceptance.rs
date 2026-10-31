@@ -76,8 +76,9 @@ async fn phase(
         locked.take().unwrap().release().await?;
         writing.take().unwrap().await??;
         retry_pause.release.notify_one();
-        let result = tokio::time::timeout(Duration::from_secs(30), &mut collecting).await??;
+        let joined = tokio::time::timeout(Duration::from_secs(30), &mut collecting).await?;
         collected = true;
+        let result = joined?;
         let positive = if cancel {
             matches!(result, Err(view::GithubCatalogError::Cancelled))
         } else {
@@ -171,18 +172,17 @@ async fn authority_publication(
         .guard
         .clone()
         .ok_or("missing authority publication proof")?;
-    let endpoint = identity.origin();
     let view = identity.view();
     let mut publication = tokio::spawn(async move {
         for _ in 0..16 {
-            // Restore the SAME existing signed session. No sign-in, device
-            // creation or scope capture is used to replace the reader's proof.
-            let writer = IdentityClient::new(&endpoint)?;
-            let restored = writer.refresh().await?;
-            assert!(restored.authenticated && restored.offline_authorized);
-            assert_eq!(restored.user_id, view.user_id);
-            assert_eq!(restored.current_device_id, view.current_device_id);
-            writer.maintain_authorization().await?;
+            // This public inventory refresh reads the existing native device
+            // key and publishes a renewed signed receipt for that SAME device.
+            // No sign-in, device creation or reader proof capture is involved.
+            let renewed = identity.refresh_devices().await?;
+            assert!(renewed.authenticated && renewed.offline_cache_ready);
+            assert_eq!(renewed.user_id, view.user_id);
+            assert_eq!(renewed.tenant_id, view.tenant_id);
+            assert_eq!(renewed.current_device_id, view.current_device_id);
         }
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
     });
@@ -214,7 +214,7 @@ async fn authority_publication(
         assert!(reads > busy && io.captured_reads() - captures == 1);
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(
         json!({"phase":"actual_authority_slot_publication","passed":true,
-        "actual_identity_read_busy":busy,"protected_reads":reads,"same_existing_session_restored":true,
+        "actual_identity_read_busy":busy,"protected_reads":reads,"same_existing_session_and_device":true,
         "source":"Accounts557 cached_at_fence compares the actual slot before/after protected I/O",
         "original_proof_valid_after_publication":true,"scope_captured_reads":1,"no_signin_or_new_device":true,"writer_joined":true}),
         )
