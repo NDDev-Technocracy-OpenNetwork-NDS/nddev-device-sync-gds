@@ -220,6 +220,9 @@ pub struct GithubSavedRepositoryGroupView {
     pub owner_id: String,
     pub owner: Option<GithubSavedOwnerView>,
     pub repositories: Vec<GithubSavedRepositoryView>,
+    /// The owner is on the host's ignored-account list: its saved data stays, but it is not
+    /// discovered, connected or synchronized and is left out of counts and actions.
+    pub ignored: bool,
 }
 #[cfg_attr(
     all(target_arch = "wasm32", feature = "browser-bindings"),
@@ -251,6 +254,10 @@ pub enum GithubCatalogError {
     ModuleDisabled,
     ModulePermissionRequired,
     ModuleConfigurationConflict,
+    /// The repository owner is on the host's ignored-account list.
+    AccountIgnored,
+    /// The host's ignored-account list exists but cannot be read or validated.
+    IgnoreListInvalid,
 }
 
 impl std::fmt::Display for GithubCatalogError {
@@ -378,6 +385,7 @@ pub(super) fn project_saved_page(
     observed_seq: u64,
     local_revision: u64,
     has_more: bool,
+    ignored: impl Fn(u64, Option<&str>) -> bool,
 ) -> GithubSavedRepositoryPageView {
     use nddev_device_sync_domain::repositories::catalog::{
         RepositoryVisibility, observations::TargetVersion,
@@ -398,6 +406,10 @@ pub(super) fn project_saved_page(
         groups: groups
             .into_iter()
             .map(|group| GithubSavedRepositoryGroupView {
+                ignored: ignored(
+                    group.owner_id.value(),
+                    group.owner.as_ref().map(|value| value.owner.login.as_str()),
+                ),
                 owner_id: group.owner_id.value().to_string(),
                 owner: group.owner.map(|value| GithubSavedOwnerView {
                     owner: owner(value.owner),

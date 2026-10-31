@@ -126,6 +126,23 @@ that cache or telemetry. `cargo test --features catalog-runtime,commit-sync` als
 checks conditional reads, source isolation and actual transport refusal. These
 controlled HTTP checks do not qualify positive GitHub access.
 
+Native hosts may list GitHub accounts the owner decided never to use, in
+`$XDG_CONFIG_HOME/nds/github/excluded-accounts.yaml` (`~/.config/nds/github/`
+without `XDG_CONFIG_HOME`; `%APPDATA%\nds\github\` on Windows). The file uses the
+Estate `excluded-accounts.yaml` schema (`schema_version: 1`, `excluded_accounts[]`
+with `login`, `provider`, `kind`), and NDDev hosts install exactly the Estate file.
+Repositories of a listed owner are dropped from catalog pages before Core
+prepares an observation; connection and synchronization refuse them with
+`account_ignored` before any provider or Git I/O. Saved observations, checkouts
+and registrations stay, and the saved page marks the owner `ignored`. Logins
+match case-insensitively; an entry with the immutable numeric `id` matches by id
+only, so a renamed owner stays ignored (reported as `ignored_owner_renamed`) and
+the old login does not ignore whoever claims it next. The list is read again for
+every operation, so removing an entry restores the normal path on the next one.
+An absent file ignores nothing; a file that cannot be read or validated refuses
+the operation with `ignore_list_invalid` instead of including anything. Browsers
+have no host list in this phase.
+
 Explicit checkout connection is available to the shared Rust GUI/CLI client on
 Linux and macOS with `catalog-runtime,commit-sync`. It requires the device's
 separate `git_write` consent. Reading a catalog or enabling process execution
