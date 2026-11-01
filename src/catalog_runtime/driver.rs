@@ -503,6 +503,7 @@ pub fn caller_error(error: &GithubCatalogError) -> (String, &'static str, bool) 
         E::InvalidResponse => ("invalid_response", "error", true),
         E::CapacityExhausted => ("sync_capacity_exhausted", "rejected", false),
         E::AccountIgnored => ("account_ignored", "rejected", false),
+        E::RepositoryIgnored => ("repository_ignored", "rejected", false),
         E::IgnoreListInvalid => ("ignore_list_invalid", "error", true),
     };
     (class.into(), outcome, failure)
@@ -996,7 +997,7 @@ impl CatalogClient {
                         flight.check()?;
                         self.caller.validate_local_use(&caller_fence).await?;
                         let ignored = self.shared.ignore_snapshot()?;
-                        let mut view = project_saved_page(groups, page.observed_seq, page.local_revision, page.next.is_some(), |id, login| ignored.ignores(id, login));
+                        let mut view = project_saved_page(groups, page.observed_seq, page.local_revision, page.next.is_some(), |id, login| ignored.ignores(id, login), |id, owner, name| ignored.ignores_repository(id, owner, name));
                         let source = self.vault.github_source().await?;
                         let consent = self.vault.module_configuration("github").await?;
                         // Validate the ORIGINAL read, not a fresh replacement.

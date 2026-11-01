@@ -192,6 +192,9 @@ pub struct GithubSavedRepositoryView {
     pub repository: GithubRepositorySummaryView,
     pub observation: GithubObservationView,
     pub synchronization: Option<GithubCommitSyncView>,
+    /// The repository itself is on the host's ignore list: its saved data stays, but it is not
+    /// discovered, connected or synchronized.
+    pub ignored: bool,
 }
 #[derive(Clone)]
 #[cfg_attr(
@@ -256,6 +259,8 @@ pub enum GithubCatalogError {
     ModuleConfigurationConflict,
     /// The repository owner is on the host's ignored-account list.
     AccountIgnored,
+    /// The repository is on the host's ignored-repository list.
+    RepositoryIgnored,
     /// The host's ignored-account list exists but cannot be read or validated.
     IgnoreListInvalid,
 }
@@ -386,6 +391,7 @@ pub(super) fn project_saved_page(
     local_revision: u64,
     has_more: bool,
     ignored: impl Fn(u64, Option<&str>) -> bool,
+    repository_ignored: impl Fn(u64, Option<&str>, &str) -> bool,
 ) -> GithubSavedRepositoryPageView {
     use nddev_device_sync_domain::repositories::catalog::{
         RepositoryVisibility, observations::TargetVersion,
@@ -405,41 +411,46 @@ pub(super) fn project_saved_page(
         has_more,
         groups: groups
             .into_iter()
-            .map(|group| GithubSavedRepositoryGroupView {
-                ignored: ignored(
-                    group.owner_id.value(),
-                    group.owner.as_ref().map(|value| value.owner.login.as_str()),
-                ),
-                owner_id: group.owner_id.value().to_string(),
-                owner: group.owner.map(|value| GithubSavedOwnerView {
-                    owner: owner(value.owner),
-                    observation: observed(value.version, value.observed_at_ms),
-                }),
-                repositories: group
-                    .repositories
-                    .into_iter()
-                    .map(|value| GithubSavedRepositoryView {
-                        synchronization: None,
-                        repository: GithubRepositorySummaryView {
-                            id: value.repository.id.value().to_string(),
-                            name: value.repository.name,
-                            visibility: match value.repository.visibility {
-                                RepositoryVisibility::Public => {
-                                    GithubRepositoryVisibilityView::Public
-                                }
-                                RepositoryVisibility::Private => {
-                                    GithubRepositoryVisibilityView::Private
-                                }
-                                RepositoryVisibility::Internal => {
-                                    GithubRepositoryVisibilityView::Internal
-                                }
-                            },
-                            archived: value.repository.archived,
-                            default_branch: value.repository.default_branch,
-                        },
+            .map(|group| {
+                let login = group.owner.as_ref().map(|value| value.owner.login.clone());
+                GithubSavedRepositoryGroupView {
+                    ignored: ignored(group.owner_id.value(), login.as_deref()),
+                    owner_id: group.owner_id.value().to_string(),
+                    owner: group.owner.map(|value| GithubSavedOwnerView {
+                        owner: owner(value.owner),
                         observation: observed(value.version, value.observed_at_ms),
-                    })
-                    .collect(),
+                    }),
+                    repositories: group
+                        .repositories
+                        .into_iter()
+                        .map(|value| GithubSavedRepositoryView {
+                            ignored: repository_ignored(
+                                value.repository.id.value(),
+                                login.as_deref(),
+                                &value.repository.name,
+                            ),
+                            synchronization: None,
+                            repository: GithubRepositorySummaryView {
+                                id: value.repository.id.value().to_string(),
+                                name: value.repository.name,
+                                visibility: match value.repository.visibility {
+                                    RepositoryVisibility::Public => {
+                                        GithubRepositoryVisibilityView::Public
+                                    }
+                                    RepositoryVisibility::Private => {
+                                        GithubRepositoryVisibilityView::Private
+                                    }
+                                    RepositoryVisibility::Internal => {
+                                        GithubRepositoryVisibilityView::Internal
+                                    }
+                                },
+                                archived: value.repository.archived,
+                                default_branch: value.repository.default_branch,
+                            },
+                            observation: observed(value.version, value.observed_at_ms),
+                        })
+                        .collect(),
+                }
             })
             .collect(),
     }

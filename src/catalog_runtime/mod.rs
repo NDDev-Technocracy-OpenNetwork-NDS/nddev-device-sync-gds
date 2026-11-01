@@ -79,7 +79,36 @@ impl IgnoreSnapshot {
     ) {
         repositories.retain(|repository| {
             !self.ignores(repository.owner.id.value(), Some(&repository.owner.login))
+                && !self.ignores_repository(
+                    repository.id.value(),
+                    Some(&repository.owner.login),
+                    &repository.name,
+                )
         });
+    }
+
+    /// Whether the repository itself is on the list; [`Self::ignores`] covers its owner.
+    pub(super) fn ignores_repository(&self, id: u64, owner: Option<&str>, name: &str) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use crate::ignore::Decision;
+            let full_name = owner.map(|owner| format!("{owner}/{name}"));
+            let decision = self.0.decide_repository(id, full_name.as_deref());
+            if decision == Decision::IgnoredRenamed {
+                tracing::warn!(
+                    event.name = "github.catalog.repository.renamed",
+                    module = "github",
+                    error.type = "ignored_repository_renamed",
+                    outcome = "rejected"
+                );
+            }
+            decision.ignored()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (id, owner, name);
+            false
+        }
     }
 
     pub(super) fn ignores(&self, id: u64, login: Option<&str>) -> bool {
@@ -127,11 +156,16 @@ impl CatalogResources {
         &self,
         location: &nddev_device_sync_domain::repositories::workspace::CheckoutLocation,
     ) -> Result<(), view::GithubCatalogError> {
-        if self
-            .ignore_snapshot()?
-            .ignores(location.owner_id.value(), Some(location.owner()))
-        {
+        let snapshot = self.ignore_snapshot()?;
+        if snapshot.ignores(location.owner_id.value(), Some(location.owner())) {
             return Err(view::GithubCatalogError::AccountIgnored);
+        }
+        if snapshot.ignores_repository(
+            location.repository_id.value(),
+            Some(location.owner()),
+            location.repository(),
+        ) {
+            return Err(view::GithubCatalogError::RepositoryIgnored);
         }
         Ok(())
     }
@@ -212,6 +246,41 @@ mod ignore_tests {
     }
 
     #[test]
+    fn an_ignored_repository_is_dropped_refused_and_marked_while_its_owner_stays() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(crate::ignore::FILE_NAME);
+        std::fs::write(
+            &path,
+            "schema_version: 1\nexcluded_repositories:\n  - repository: \"nddev/old-site\"\n    provider: \"github\"\n    reason: \"retired\"\n",
+        )
+        .unwrap();
+        let shared = resources(&path);
+        let mut page = vec![repository(1, 10, "nddev"), repository(2, 10, "nddev")];
+        page[1].name = "Old-Site".into();
+        shared.ignore_snapshot().unwrap().retain_included(&mut page);
+        assert_eq!(page.iter().map(|r| r.id.value()).collect::<Vec<_>>(), [1]);
+        let site = CheckoutLocation::new(
+            RepositoryId::new(2).unwrap(),
+            GithubAccountId::new(10).unwrap(),
+            "nddev".into(),
+            "old-site".into(),
+        )
+        .unwrap();
+        assert_eq!(
+            shared.refuse_ignored(&site),
+            Err(view::GithubCatalogError::RepositoryIgnored)
+        );
+        assert_eq!(shared.refuse_ignored(&location(10, "nddev")), Ok(()));
+        let snapshot = shared.ignore_snapshot().unwrap();
+        assert!(snapshot.ignores_repository(2, Some("nddev"), "old-site"));
+        assert!(!snapshot.ignores(10, Some("nddev")));
+        assert_eq!(
+            driver::caller_error(&view::GithubCatalogError::RepositoryIgnored).0,
+            "repository_ignored"
+        );
+    }
+
+    #[test]
     fn an_unreadable_list_refuses_instead_of_including() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join(crate::ignore::FILE_NAME);
@@ -283,6 +352,7 @@ mod ignore_tests {
             1,
             false,
             |id, login| snapshot.ignores(id, login),
+            |id, owner, name| snapshot.ignores_repository(id, owner, name),
         );
         let marked = view
             .groups
@@ -294,6 +364,11 @@ mod ignore_tests {
         assert_eq!(
             marked,
             [("10", false, 1), ("20", true, 1), ("30", false, 1)]
+        );
+        assert!(
+            view.groups
+                .iter()
+                .all(|g| g.repositories.iter().all(|r| !r.ignored))
         );
     }
 }
