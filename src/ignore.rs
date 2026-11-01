@@ -1,7 +1,9 @@
-//! GitHub accounts the owner decided this module never discovers, connects or synchronizes.
+//! GitHub accounts and repositories the owner decided this module never discovers, connects or
+//! synchronizes.
 //!
 //! The list uses the Estate `excluded-accounts.yaml` schema (`schema_version: 1`,
-//! `excluded_accounts[]` with `login`, `provider`, `kind` and descriptive fields). A host
+//! `excluded_accounts[]` with `login`, `provider`, `kind`, and `excluded_repositories[]` with
+//! `repository` as `owner/name` and `provider`, each with descriptive fields). A host
 //! installs it at [`default_path`]; an absent file means no ignored account. A present file that
 //! cannot be read or validated fails closed: callers refuse the operation instead of including
 //! anything. An entry may pin the immutable numeric account `id`; it then matches by id only,
@@ -40,10 +42,18 @@ struct Entry {
     id: Option<u64>,
 }
 
-/// A validated set of ignored GitHub accounts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RepositoryEntry {
+    /// ASCII-lowercased `owner/name`.
+    full_name: String,
+    id: Option<u64>,
+}
+
+/// A validated set of ignored GitHub accounts and repositories.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IgnoredAccounts {
     entries: Vec<Entry>,
+    repositories: Vec<RepositoryEntry>,
 }
 
 #[derive(Deserialize)]
@@ -51,6 +61,16 @@ struct ListWire {
     schema_version: u32,
     #[serde(default)]
     excluded_accounts: Vec<EntryWire>,
+    #[serde(default)]
+    excluded_repositories: Vec<RepositoryWire>,
+}
+
+#[derive(Deserialize)]
+struct RepositoryWire {
+    repository: String,
+    provider: String,
+    #[serde(default)]
+    id: Option<u64>,
 }
 
 // Descriptive fields (reason, decided_by, decided_at, ...) belong to the Estate record and are
@@ -62,6 +82,17 @@ struct EntryWire {
     kind: String,
     #[serde(default)]
     id: Option<u64>,
+}
+
+/// GitHub repository names: ASCII letters, digits, `-`, `_` and `.`, at most 100 bytes, not a
+/// path component of their own.
+fn valid_repository(name: &str) -> bool {
+    (1..=100).contains(&name.len())
+        && name != "."
+        && name != ".."
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
 }
 
 fn valid_login(login: &str) -> bool {
@@ -88,7 +119,10 @@ impl IgnoredAccounts {
         };
         let wire: ListWire =
             serde_saphyr::from_str_with_options(text, options).map_err(|_| InvalidList)?;
-        if wire.schema_version != 1 || wire.excluded_accounts.len() > MAX_ENTRIES {
+        if wire.schema_version != 1
+            || wire.excluded_accounts.len() > MAX_ENTRIES
+            || wire.excluded_repositories.len() > MAX_ENTRIES
+        {
             return Err(InvalidList);
         }
         let mut entries: Vec<Entry> = Vec::new();
@@ -117,7 +151,36 @@ impl IgnoredAccounts {
                 id: entry.id,
             });
         }
-        Ok(Self { entries })
+        let mut repositories: Vec<RepositoryEntry> = Vec::new();
+        for entry in wire.excluded_repositories {
+            if entry.provider.is_empty() || entry.provider.chars().any(char::is_control) {
+                return Err(InvalidList);
+            }
+            if entry.provider != "github" {
+                continue;
+            }
+            let Some((owner, name)) = entry.repository.split_once('/') else {
+                return Err(InvalidList);
+            };
+            if !valid_login(owner) || !valid_repository(name) || entry.id == Some(0) {
+                return Err(InvalidList);
+            }
+            let full_name = entry.repository.to_ascii_lowercase();
+            if repositories
+                .iter()
+                .any(|e| e.full_name == full_name || entry.id.is_some() && e.id == entry.id)
+            {
+                return Err(InvalidList);
+            }
+            repositories.push(RepositoryEntry {
+                full_name,
+                id: entry.id,
+            });
+        }
+        Ok(Self {
+            entries,
+            repositories,
+        })
     }
 
     /// Reads the list at `path`. An absent file is an empty list; anything else that is not a
@@ -141,7 +204,30 @@ impl IgnoredAccounts {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.entries.is_empty() && self.repositories.is_empty()
+    }
+
+    /// Decides one repository by its immutable `id` and, when known, its current `owner/name`.
+    /// Only the repository list is consulted; [`Self::decide`] covers its owner.
+    pub fn decide_repository(&self, id: u64, full_name: Option<&str>) -> Decision {
+        let full_name = full_name.map(str::to_ascii_lowercase);
+        for entry in &self.repositories {
+            match entry.id {
+                Some(pinned) if pinned == id => {
+                    return if full_name.as_deref() == Some(entry.full_name.as_str()) {
+                        Decision::Ignored
+                    } else {
+                        Decision::IgnoredRenamed
+                    };
+                }
+                Some(_) => {}
+                None if full_name.as_deref() == Some(entry.full_name.as_str()) => {
+                    return Decision::Ignored;
+                }
+                None => {}
+            }
+        }
+        Decision::Included
     }
 
     /// Decides one account by its immutable `id` and current `login`.
@@ -252,6 +338,18 @@ excluded_accounts:
     reason: "not this module"
     decided_by: "owner"
     decided_at: "2026-11-01"
+excluded_repositories:
+  - repository: "rldyourmnd/Old.Experiment_1"
+    provider: "github"
+    reason: "retired"
+    decided_by: "owner"
+    decided_at: "2026-11-01"
+  - repository: "nddev/pinned-repo"
+    id: 900
+    provider: "github"
+    reason: "pinned"
+    decided_by: "owner"
+    decided_at: "2026-11-01"
 "#;
 
     #[test]
@@ -270,6 +368,25 @@ excluded_accounts:
     }
 
     #[test]
+    fn repositories_are_ignored_by_full_name_or_pinned_id() {
+        let list = IgnoredAccounts::parse(ESTATE).unwrap();
+        let decide = |id, name: Option<&str>| list.decide_repository(id, name);
+        assert_eq!(
+            decide(1, Some("RLDYOURMND/old.experiment_1")),
+            Decision::Ignored
+        );
+        assert_eq!(decide(1, Some("rldyourmnd/other")), Decision::Included);
+        // Without a known name only a pinned id decides.
+        assert_eq!(decide(1, None), Decision::Included);
+        assert_eq!(decide(900, None), Decision::IgnoredRenamed);
+        assert_eq!(decide(900, Some("nddev/pinned-repo")), Decision::Ignored);
+        assert_eq!(decide(900, Some("nddev/renamed")), Decision::IgnoredRenamed);
+        assert_eq!(decide(901, Some("nddev/pinned-repo")), Decision::Included);
+        // The repository list never ignores the owner account.
+        assert_eq!(list.decide(5, "rldyourmnd"), Decision::Included);
+    }
+
+    #[test]
     fn a_malformed_list_fails_closed() {
         for text in [
             "schema_version: 2\nexcluded_accounts: []\n",
@@ -282,6 +399,11 @@ excluded_accounts:
             "schema_version: 1\nexcluded_accounts:\n  - &x {login: a, provider: github, kind: user}\n  - *x\n",
             "schema_version: 1\nschema_version: 1\n",
             "schema_version: 1\nexcluded_accounts:\n  - login: a\n    kind: user\n",
+            "schema_version: 1\nexcluded_repositories:\n  - repository: no-slash\n    provider: github\n",
+            "schema_version: 1\nexcluded_repositories:\n  - repository: a/..\n    provider: github\n",
+            "schema_version: 1\nexcluded_repositories:\n  - repository: a/b c\n    provider: github\n",
+            "schema_version: 1\nexcluded_repositories:\n  - repository: a/b\n    provider: github\n  - repository: A/B\n    provider: github\n",
+            "schema_version: 1\nexcluded_repositories:\n  - repository: a/b\n    provider: github\n    id: 0\n",
             "[",
         ] {
             assert_eq!(IgnoredAccounts::parse(text), Err(InvalidList), "{text}");
