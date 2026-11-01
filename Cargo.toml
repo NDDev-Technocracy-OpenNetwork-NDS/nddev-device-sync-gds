@@ -16,8 +16,8 @@ commit-sync = ["dep:base64", "dep:zeroize", "dep:tokio", "dep:tokio-util", "dep:
 github-catalog = ["dep:zeroize", "dep:tokio", "dep:tokio-util", "dep:tracing", "dep:url", "dep:nddev-device-sync-telemetry", "dep:reqwest", "dep:rustls", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:gloo-timers", "dep:web-sys"]
 
 [dependencies]
-nddev-device-sync-accounts = { git = "https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-accounts", rev = "2da6df9b578db1f6696120da3fbdb78ae3eb0ac0", optional = true }
-nddev-device-sync-vault = { git = "https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-vault", rev = "3f062dd70391ff377633dad300eee36b8258d161", optional = true }
+nddev-device-sync-accounts = { git = "https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-accounts", rev = "78b9b517325ea8590f8bb897acdde5bb4e6e9e20", optional = true }
+nddev-device-sync-vault = { git = "https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-vault", rev = "2b108a0ca400d84b819b65e7b23427f6a27b45b2", optional = true }
 uuid = { version = "1.27", features = ["v4"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -65,8 +65,8 @@ tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "net", "io-util", "signal"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-nddev-device-sync-accounts = { git = "https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-accounts", rev = "2da6df9b578db1f6696120da3fbdb78ae3eb0ac0", features = ["development-http"] }
-nddev-device-sync-vault = { git = "https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-vault", rev = "3f062dd70391ff377633dad300eee36b8258d161", features = ["development-http"] }
+nddev-device-sync-accounts = { git = "https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-accounts", rev = "78b9b517325ea8590f8bb897acdde5bb4e6e9e20", features = ["development-http"] }
+nddev-device-sync-vault = { git = "https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-vault", rev = "2b108a0ca400d84b819b65e7b23427f6a27b45b2", features = ["development-http"] }
 
 [lints.rust]
 unsafe_code = "forbid"
