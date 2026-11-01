@@ -131,9 +131,12 @@ Native hosts may list GitHub accounts the owner decided never to use, in
 without `XDG_CONFIG_HOME`; `%APPDATA%\nds\github\` on Windows). The file uses the
 Estate `excluded-accounts.yaml` schema (`schema_version: 1`, `excluded_accounts[]`
 with `login`, `provider`, `kind`), and NDDev hosts install exactly the Estate file.
-Repositories of a listed owner are dropped from catalog pages before Core
+The same file may list single repositories under `excluded_repositories[]`
+(`repository` as `owner/name`, `provider`, optional numeric `id`). Repositories of a
+listed owner, and listed repositories, are dropped from catalog pages before Core
 prepares an observation; connection and synchronization refuse them with
-`account_ignored` before any provider or Git I/O. Saved observations, checkouts
+`account_ignored` or `repository_ignored` before any provider or Git I/O. The saved
+page marks an ignored owner on its group and an ignored repository on its row. Saved observations, checkouts
 and registrations stay, and the saved page marks the owner `ignored`. Logins
 match case-insensitively; an entry with the immutable numeric `id` matches by id
 only, so a renamed owner stays ignored (reported as `ignored_owner_renamed`) and
